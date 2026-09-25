@@ -1,0 +1,47 @@
+#!/bin/sh
+# Rebuild dash 0.5.13.5 for Android bionic.
+# Source: Herbert Xu, http://gondor.apana.org.au/~herbert/dash/files/
+# SPDX: BSD-3-Clause, see third_party/dash/COPYING
+set -u
+ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+NDK=${ANDROID_NDK_HOME:-/root/Android/ndk/29.0.14206865}
+API=${ANDROID_API:-24}
+BIN="$NDK/toolchains/llvm/prebuilt/linux-$(uname -m)/bin"
+if [ ! -x "$BIN/clang" ]; then
+  BIN="$NDK/toolchains/llvm/prebuilt/linux-aarch64/bin"
+fi
+TARBALL="$ROOT/third_party/dash/dash-0.5.13.5.tar.gz"
+PATCH="$ROOT/third_party/dash/android-bionic.patch.py"
+OUT="$ROOT/app/src/main/assets/bin"
+JNILIBS="$ROOT/app/src/main/jniLibs"
+WORKDIR=${TMPDIR:-/tmp}/terminal-dash-build
+rm -rf "$WORKDIR"
+mkdir -p "$WORKDIR" "$OUT" "$JNILIBS/arm64-v8a" "$JNILIBS/armeabi-v7a"
+
+build_one() {
+  host=$1
+  triple=$2
+  asset=$3
+  abi=$4
+  src="$WORKDIR/$abi"
+  mkdir -p "$src"
+  tar -C "$src" -xzf "$TARBALL"
+  cd "$src/dash-0.5.13.5" || return 1
+  PATH="$BIN:$PATH" \
+    ac_cv_func_sigsetmask=no \
+    CC="$BIN/${triple}${API}-clang" \
+    AR="$BIN/llvm-ar" RANLIB="$BIN/llvm-ranlib" STRIP="$BIN/llvm-strip" \
+    CFLAGS='-O2 -fPIE' LDFLAGS='-pie -Wl,-z,max-page-size=16384' \
+    ./configure --host="$host" --build="$(uname -m)-unknown-linux-gnu" --prefix=/usr
+  python3 "$PATCH" "$PWD"
+  PATH="$BIN:$PATH" make -j"$(nproc)"
+  "$BIN/llvm-strip" -s src/dash
+  cp -f src/dash "$OUT/$asset"
+  cp -f src/dash "$JNILIBS/$abi/libdash.so"
+  chmod 755 "$OUT/$asset" "$JNILIBS/$abi/libdash.so"
+}
+
+build_one aarch64-linux-android aarch64-linux-android dash-arm64-v8a arm64-v8a
+build_one armv7a-linux-androideabi armv7a-linux-androideabi dash-armeabi-v7a armeabi-v7a
+(cd "$OUT" && sha256sum dash-arm64-v8a dash-armeabi-v7a > SHA256SUMS)
+echo "dash installed into $OUT"

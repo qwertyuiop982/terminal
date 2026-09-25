@@ -1,0 +1,35 @@
+# terminal
+
+Android terminal with a private POSIX prefix.
+
+- `minSdk` 24, `targetSdk` 34, `compileSdk` 35
+- Shell: dash 0.5.13.5, cross-compiled for `arm64-v8a` and `armeabi-v7a`
+- `HOME=/data/data/com.terminal/files/home`
+- `USR=/data/data/com.terminal/files/usr`
+
+`files/usr` is the long-term prefix. `bin`, `lib`, `include`, `etc`, `var`,
+`opt`, and the apt/dpkg directories are created on first launch. Package
+manager binaries, compilers, and shared libraries are intentionally not bundled
+yet; their directories and configuration files are reserved for later work.
+
+Android 10 and newer reject `execve()` inside an app data directory when
+`targetSdk` is 29 or higher. dash is therefore packaged as `libdash.so` and
+executed from `nativeLibraryDir`. Later user commands belong under
+`files/usr/libexec`, which is outside the restricted home directory and keeps
+the executable bit.
+
+## Third-party software
+
+dash 0.5.13.5, Copyright (c) Herbert Xu and earlier contributors listed in
+`third_party/dash/COPYING`. License: BSD-3-Clause, plus the Bash-derived
+`mksignames.c` notice contained in the same file. Upstream tarball:
+<http://gondor.apana.org.au/~herbert/dash/files/dash-0.5.13.5.tar.gz>.
+
+Rebuild with `tools/build-dash.sh`. It needs the Android NDK and applies the
+bionic compatibility fixes documented in `third_party/dash/README.md`.
+
+## Build
+
+```sh
+./gradlew :app:assembleDebug
+```

@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">terminal</string>
+    <string name="command_hint">command</string>
+    <string name="send">enter</string>
+</resources>
