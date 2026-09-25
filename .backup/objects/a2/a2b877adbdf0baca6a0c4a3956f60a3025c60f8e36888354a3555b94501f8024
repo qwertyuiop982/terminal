@@ -59,7 +59,7 @@ object Rootfs {
         writeIfMissing(File(usr, "var/log/dpkg.log"), "")
         File(usr, "tmp").setWritable(true, true)
         File(usr, "var/tmp").setWritable(true, true)
-        return Layout(home, usr, shell(context, usr))
+        return Layout(home, usr, shell(context))
     }
 
     fun environment(layout: Layout): Array<String> {
@@ -85,41 +85,23 @@ object Rootfs {
         )
     }
 
-    private fun shell(context: Context, usr: File): File {
+    private fun shell(context: Context): File {
         val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
+        val native = File(context.applicationInfo.nativeLibraryDir, "libdash.so")
+        if (native.isFile) return native
         val asset = when {
             abi.startsWith("arm64") -> "bin/dash-arm64-v8a"
             abi.contains("armeabi") || abi.contains("arm") -> "bin/dash-armeabi-v7a"
             else -> throw IllegalStateException("unsupported ABI $abi")
         }
-        val dash = File(usr, "bin/dash")
-        val sh = File(usr, "bin/sh")
-        install(context, asset, dash)
-        if (!sh.isFile || sh.length() != dash.length()) {
-            dash.copyTo(sh, overwrite = true)
-        }
-        sh.setReadable(true, false)
-        sh.setExecutable(true, false)
-        return sh
-    }
-
-    private fun install(context: Context, asset: String, destination: File) {
-        destination.parentFile?.mkdirs()
-        val temporary = File(destination.parentFile, destination.name + ".tmp")
-        context.assets.open(asset).use { input ->
-            FileOutputStream(temporary).use { output -> input.copyTo(output) }
-        }
-        if (!destination.isFile || destination.length() != temporary.length()) {
-            if (destination.exists()) destination.delete()
-            if (!temporary.renameTo(destination)) {
-                temporary.copyTo(destination, overwrite = true)
-                temporary.delete()
+        val extracted = File(context.codeCacheDir, "dash")
+        if (!extracted.isFile || extracted.length() == 0L) {
+            context.assets.open(asset).use { input ->
+                FileOutputStream(extracted).use { output -> input.copyTo(output) }
             }
-        } else {
-            temporary.delete()
+            extracted.setExecutable(true, false)
         }
-        destination.setReadable(true, false)
-        destination.setExecutable(true, false)
+        return extracted
     }
 
     private fun writeIfMissing(file: File, content: String) {

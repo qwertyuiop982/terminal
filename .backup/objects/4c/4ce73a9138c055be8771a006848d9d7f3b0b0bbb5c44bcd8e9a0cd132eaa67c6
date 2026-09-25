@@ -36,7 +36,8 @@ build_one() {
   PATH="$BIN:$PATH" make -j"$(nproc)"
   "$BIN/llvm-strip" -s src/dash
   cp -f src/dash "$OUT/$asset"
-  chmod 755 "$OUT/$asset"
+  cp -f src/dash "$JNILIBS/$abi/libdash.so"
+  chmod 755 "$OUT/$asset" "$JNILIBS/$abi/libdash.so"
 }
 
 build_one aarch64-linux-android aarch64-linux-android dash-arm64-v8a arm64-v8a
