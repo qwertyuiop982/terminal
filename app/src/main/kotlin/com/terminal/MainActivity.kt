@@ -14,8 +14,11 @@ import java.util.concurrent.Executors
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private val io: ExecutorService = Executors.newSingleThreadExecutor()
-    private var session: TerminalSession? = null
+    @Volatile private var session: TerminalSession? = null
     private val screen = StringBuilder()
+
+    /** 还原输入框内容时抑制 TextWatcher，避免 submitInput() 递归触发。 */
+    private var restoringInput = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -33,6 +36,7 @@ class MainActivity : AppCompatActivity() {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(s: Editable?) {
+                if (restoringInput) return
                 if (s != null && s.endsWith("\n")) submitInput()
             }
         })
@@ -41,6 +45,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun startShell() {
         io.execute {
+            // 执行器是单线程的，在任务内部再检查一次，防止连续两次
+            // startShell() 竞态创建出两个 dash 进程。
+            if (session?.isRunning == true) return@execute
             try {
                 val layout = Rootfs.ensure(this)
                 val pty = Pty.open(
@@ -77,9 +84,21 @@ class MainActivity : AppCompatActivity() {
     private fun submitInput() {
         val text = binding.input.text?.toString().orEmpty()
         if (text.isEmpty()) return
+
+        val currentSession = session
+        if (currentSession == null || !currentSession.isRunning) {
+            // 会话不可用时不要丢弃用户输入：恢复文本并重新拉起 shell。
+            restoringInput = true
+            binding.input.setText(text)
+            binding.input.setSelection(text.length)
+            restoringInput = false
+            startShell()
+            return
+        }
         binding.input.text = null
+
         val line = if (text.endsWith("\n")) text else text + "\n"
-        io.execute { session?.write(line) }
+        io.execute { currentSession.write(line) }
     }
 
     private fun append(text: String) {
@@ -91,7 +110,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         session?.close()
-        io.shutdownNow()
+        // shutdown() 而不是 shutdownNow()：让排队中的写操作自然结束，
+        // 会话生命周期由 TerminalSession/Pty 自行维护。
+        io.shutdown()
         super.onDestroy()
     }
 }

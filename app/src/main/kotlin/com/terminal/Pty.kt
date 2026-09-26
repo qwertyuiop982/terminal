@@ -1,7 +1,9 @@
 package com.terminal
 
 /** JNI bridge to a single POSIX PTY session. */
-class Pty private constructor(private var handle: Long) : AutoCloseable {
+class Pty private constructor(handle: Long) : AutoCloseable {
+    @Volatile private var handle: Long = handle
+
     val isOpen: Boolean get() = handle != 0L
 
     fun read(buffer: ByteArray): Int {
@@ -28,6 +30,7 @@ class Pty private constructor(private var handle: Long) : AutoCloseable {
         return nativeWait(current, 0)
     }
 
+    @Synchronized
     override fun close() {
         val current = handle
         if (current != 0L) {
@@ -54,19 +57,14 @@ class Pty private constructor(private var handle: Long) : AutoCloseable {
             }
             return Pty(handle)
         }
+
+        // @JvmStatic 让 native 方法挂在 com.terminal.Pty 类上，与
+        // libpty.so 中的 Java_com_terminal_Pty_nativeXxx 符号对应。
+        @JvmStatic private external fun nativeOpen(shell: String, cwd: String, environment: Array<String>, rows: Int, cols: Int): Long
+        @JvmStatic private external fun nativeRead(handle: Long, buffer: ByteArray): Int
+        @JvmStatic private external fun nativeWrite(handle: Long, data: ByteArray, length: Int): Int
+        @JvmStatic private external fun nativeResize(handle: Long, rows: Int, cols: Int)
+        @JvmStatic private external fun nativeWait(handle: Long, block: Int): Int
+        @JvmStatic private external fun nativeClose(handle: Long)
     }
 }
-
-private external fun nativeOpen(
-    shell: String,
-    cwd: String,
-    environment: Array<String>,
-    rows: Int,
-    cols: Int,
-): Long
-
-private external fun nativeRead(handle: Long, buffer: ByteArray): Int
-private external fun nativeWrite(handle: Long, data: ByteArray, length: Int): Int
-private external fun nativeResize(handle: Long, rows: Int, cols: Int)
-private external fun nativeWait(handle: Long, block: Int): Int
-private external fun nativeClose(handle: Long)

@@ -1,11 +1,16 @@
 /*
  * Minimal POSIX PTY session for the terminal app.
- * Creates a master/slave pair, forks dash, and exposes blocking I/O to JNI.
+ * Creates a master/slave pair, forks dash, and exposes non-blocking I/O
+ * to JNI. A single global mutex guards every session access so close()
+ * racing with in-flight read()/write() calls can never touch freed memory:
+ * the session leaves the registry before it is freed, and stale handles
+ * simply fail the lookup.
  */
 #include <jni.h>
 
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,18 +21,39 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+#define MAX_SESSIONS 16
 #define MAX_ENV 64
 
 typedef struct {
     int master;
     pid_t pid;
-    int alive;
 } PtySession;
 
-static int set_cloexec(int fd) {
-    int flags = fcntl(fd, F_GETFD);
-    if (flags < 0) return -1;
-    return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+static PtySession *g_sessions[MAX_SESSIONS];
+
+static PtySession *find_session_locked(jlong handle) {
+    PtySession *session = (PtySession *) handle;
+    int i;
+    if (session == NULL) return NULL;
+    for (i = 0; i < MAX_SESSIONS; i++) {
+        if (g_sessions[i] == session) return session;
+    }
+    return NULL;
+}
+
+static int register_session(PtySession *session) {
+    int i;
+    pthread_mutex_lock(&g_lock);
+    for (i = 0; i < MAX_SESSIONS; i++) {
+        if (g_sessions[i] == NULL) {
+            g_sessions[i] = session;
+            pthread_mutex_unlock(&g_lock);
+            return 0;
+        }
+    }
+    pthread_mutex_unlock(&g_lock);
+    return -1;
 }
 
 static void set_nonblock(int fd, int enabled) {
@@ -50,40 +76,28 @@ static void write_all(int fd, const char *data, size_t len) {
     }
 }
 
-static void child_setup(int slave, const char *cwd, char **envp) {
+static void child_setup(int slave, const char *cwd) {
     setsid();
-    if (ioctl(slave, TIOCSCTTY, 0) < 0) {
-        /* Older kernels may not accept the request; controlling tty is still
-         * established by opening the slave after setsid on many devices. */
-    }
+    ioctl(slave, TIOCSCTTY, 0);
     dup2(slave, STDIN_FILENO);
     dup2(slave, STDOUT_FILENO);
     dup2(slave, STDERR_FILENO);
     if (slave > STDERR_FILENO) close(slave);
     if (cwd != NULL && cwd[0] != '\0') {
-        if (chdir(cwd) != 0) {
-            /* Fall through; the shell can still start in the inherited cwd. */
-        }
-    }
-    if (envp != NULL) {
-        for (int i = 0; envp[i] != NULL; i++) {
-            char *eq = strchr(envp[i], '=');
-            if (eq == NULL || eq == envp[i]) continue;
-            *eq = '\0';
-            setenv(envp[i], eq + 1, 1);
-            *eq = '=';
-        }
+        chdir(cwd); /* keep the inherited cwd when chdir fails */
     }
 }
 
 static char **copy_env(JNIEnv *env, jobjectArray array, char *storage[], int *count) {
+    jsize n;
+    jsize i;
     if (array == NULL) {
         *count = 0;
         return NULL;
     }
-    jsize n = (*env)->GetArrayLength(env, array);
+    n = (*env)->GetArrayLength(env, array);
     if (n > MAX_ENV - 1) n = MAX_ENV - 1;
-    for (jsize i = 0; i < n; i++) {
+    for (i = 0; i < n; i++) {
         jstring item = (jstring) (*env)->GetObjectArrayElement(env, array, i);
         const char *utf = (*env)->GetStringUTFChars(env, item, NULL);
         storage[i] = strdup(utf);
@@ -96,7 +110,8 @@ static char **copy_env(JNIEnv *env, jobjectArray array, char *storage[], int *co
 }
 
 static void free_env(char *storage[], int count) {
-    for (int i = 0; i < count; i++) free(storage[i]);
+    int i;
+    for (i = 0; i < count; i++) free(storage[i]);
 }
 
 JNIEXPORT jlong JNICALL
@@ -112,32 +127,38 @@ Java_com_terminal_Pty_nativeOpen(JNIEnv *env, jclass clazz,
 
     int master = -1;
     char slaveName[128];
+    struct winsize ws;
+    pid_t pid;
+    PtySession *session;
+
     memset(slaveName, 0, sizeof(slaveName));
     master = open("/dev/ptmx", O_RDWR | O_CLOEXEC);
     if (master < 0) goto fail;
     if (grantpt(master) != 0 || unlockpt(master) != 0) goto fail;
     if (ptsname_r(master, slaveName, sizeof(slaveName)) != 0) goto fail;
 
-    struct winsize ws;
     memset(&ws, 0, sizeof(ws));
     ws.ws_row = (unsigned short) (rows > 0 ? rows : 40);
     ws.ws_col = (unsigned short) (cols > 0 ? cols : 100);
     ioctl(master, TIOCSWINSZ, &ws);
 
-    pid_t pid = fork();
+    pid = fork();
     if (pid < 0) goto fail;
     if (pid == 0) {
         int slave = open(slaveName, O_RDWR);
         if (slave < 0) _exit(127);
         close(master);
-        child_setup(slave, cwd, envp);
-        char *argv[] = {(char *) shell, (char *) "-i", NULL};
-        execve(shell, argv, envp != NULL ? envp : environ);
-        write_all(STDERR_FILENO, "terminal: failed to exec shell\n", 30);
+        child_setup(slave, cwd);
+        {
+            char *argv[] = {(char *) shell, (char *) "-i", NULL};
+            execve(shell, argv, envp != NULL ? envp : environ);
+        }
+        write_all(STDERR_FILENO, "terminal: failed to exec shell\n",
+                  sizeof("terminal: failed to exec shell\n") - 1);
         _exit(127);
     }
 
-    PtySession *session = calloc(1, sizeof(PtySession));
+    session = calloc(1, sizeof(PtySession));
     if (session == NULL) {
         kill(pid, SIGKILL);
         waitpid(pid, NULL, 0);
@@ -145,7 +166,12 @@ Java_com_terminal_Pty_nativeOpen(JNIEnv *env, jclass clazz,
     }
     session->master = master;
     session->pid = pid;
-    session->alive = 1;
+    if (register_session(session) != 0) {
+        kill(pid, SIGKILL);
+        waitpid(pid, NULL, 0);
+        free(session);
+        goto fail;
+    }
     set_nonblock(master, 1);
 
     free_env(envStorage, envCount);
@@ -164,15 +190,38 @@ fail:
 JNIEXPORT jint JNICALL
 Java_com_terminal_Pty_nativeRead(JNIEnv *env, jclass clazz, jlong handle, jbyteArray buffer) {
     (void) clazz;
-    PtySession *session = (PtySession *) handle;
-    if (session == NULL || session->master < 0) return -1;
-    jsize cap = (*env)->GetArrayLength(env, buffer);
-    jbyte *bytes = (*env)->GetByteArrayElements(env, buffer, NULL);
-    ssize_t n = read(session->master, bytes, (size_t) cap);
-    int err = errno;
-    (*env)->ReleaseByteArrayElements(env, buffer, bytes, 0);
+    PtySession *session;
+    jbyte *bytes;
+    jsize cap;
+    ssize_t n;
+    int err;
+
+    pthread_mutex_lock(&g_lock);
+    session = find_session_locked(handle);
+    if (session == NULL || session->master < 0) {
+        pthread_mutex_unlock(&g_lock);
+        return -1;
+    }
+    cap = (*env)->GetArrayLength(env, buffer);
+    if (cap <= 0) {
+        pthread_mutex_unlock(&g_lock);
+        return 0;
+    }
+    bytes = (*env)->GetByteArrayElements(env, buffer, NULL);
+    if (bytes == NULL) {
+        pthread_mutex_unlock(&g_lock);
+        return -1;
+    }
+    do {
+        n = read(session->master, bytes, (size_t) cap);
+    } while (n < 0 && errno == EINTR);
+    err = errno;
+    (*env)->ReleaseByteArrayElements(env, buffer, bytes, n > 0 ? 0 : JNI_ABORT);
+    pthread_mutex_unlock(&g_lock);
     if (n < 0) {
-        if (err == EAGAIN || err == EWOULDBLOCK) return 0;
+        /* EIO: slave 端已关闭，即子进程退出。返回 0 让 Java 读循环
+         * 走到 poll() 收割状态码。 */
+        if (err == EAGAIN || err == EWOULDBLOCK || err == EIO) return 0;
         return -1;
     }
     return (jint) n;
@@ -181,12 +230,28 @@ Java_com_terminal_Pty_nativeRead(JNIEnv *env, jclass clazz, jlong handle, jbyteA
 JNIEXPORT jint JNICALL
 Java_com_terminal_Pty_nativeWrite(JNIEnv *env, jclass clazz, jlong handle, jbyteArray data, jint length) {
     (void) clazz;
-    PtySession *session = (PtySession *) handle;
-    if (session == NULL || session->master < 0 || length < 0) return -1;
-    jbyte *bytes = (*env)->GetByteArrayElements(env, data, NULL);
-    ssize_t n = write(session->master, bytes, (size_t) length);
-    int err = errno;
+    PtySession *session;
+    jbyte *bytes;
+    ssize_t n;
+    int err;
+
+    pthread_mutex_lock(&g_lock);
+    session = find_session_locked(handle);
+    if (session == NULL || session->master < 0 || length < 0) {
+        pthread_mutex_unlock(&g_lock);
+        return -1;
+    }
+    bytes = (*env)->GetByteArrayElements(env, data, NULL);
+    if (bytes == NULL) {
+        pthread_mutex_unlock(&g_lock);
+        return -1;
+    }
+    do {
+        n = write(session->master, bytes, (size_t) length);
+    } while (n < 0 && errno == EINTR);
+    err = errno;
     (*env)->ReleaseByteArrayElements(env, data, bytes, JNI_ABORT);
+    pthread_mutex_unlock(&g_lock);
     if (n < 0) {
         if (err == EAGAIN || err == EWOULDBLOCK) return 0;
         return -1;
@@ -198,26 +263,40 @@ JNIEXPORT void JNICALL
 Java_com_terminal_Pty_nativeResize(JNIEnv *env, jclass clazz, jlong handle, jint rows, jint cols) {
     (void) env;
     (void) clazz;
-    PtySession *session = (PtySession *) handle;
-    if (session == NULL || session->master < 0) return;
+    PtySession *session;
     struct winsize ws;
+
+    pthread_mutex_lock(&g_lock);
+    session = find_session_locked(handle);
+    if (session == NULL || session->master < 0) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
     memset(&ws, 0, sizeof(ws));
     ws.ws_row = (unsigned short) (rows > 0 ? rows : 1);
     ws.ws_col = (unsigned short) (cols > 0 ? cols : 1);
     ioctl(session->master, TIOCSWINSZ, &ws);
+    pthread_mutex_unlock(&g_lock);
 }
 
 JNIEXPORT jint JNICALL
 Java_com_terminal_Pty_nativeWait(JNIEnv *env, jclass clazz, jlong handle, jint block) {
     (void) env;
     (void) clazz;
-    PtySession *session = (PtySession *) handle;
-    if (session == NULL || session->pid <= 0) return -1;
+    PtySession *session;
     int status = 0;
-    pid_t result = waitpid(session->pid, &status, block ? 0 : WNOHANG);
+    pid_t result;
+
+    pthread_mutex_lock(&g_lock);
+    session = find_session_locked(handle);
+    if (session == NULL || session->pid <= 0) {
+        pthread_mutex_unlock(&g_lock);
+        return -1;
+    }
+    result = waitpid(session->pid, &status, block ? 0 : WNOHANG);
+    pthread_mutex_unlock(&g_lock);
     if (result == 0) return -2;
     if (result < 0) return -1;
-    session->alive = 0;
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
     return status;
@@ -227,23 +306,41 @@ JNIEXPORT void JNICALL
 Java_com_terminal_Pty_nativeClose(JNIEnv *env, jclass clazz, jlong handle) {
     (void) env;
     (void) clazz;
-    PtySession *session = (PtySession *) handle;
-    if (session == NULL) return;
-    if (session->master >= 0) {
-        close(session->master);
-        session->master = -1;
+    PtySession *session;
+    int master;
+    pid_t pid;
+    int status = 0;
+    int i;
+
+    pthread_mutex_lock(&g_lock);
+    session = find_session_locked(handle);
+    if (session == NULL) {
+        pthread_mutex_unlock(&g_lock);
+        return;
     }
-    if (session->pid > 0 && session->alive) {
-        kill(session->pid, SIGHUP);
-        int status = 0;
-        for (int i = 0; i < 20; i++) {
-            pid_t result = waitpid(session->pid, &status, WNOHANG);
-            if (result != 0) break;
+    /* 先从注册表摘除：此后任何在途调用拿着旧 handle 只会查找失败，
+     * 不会与下面的 free() 产生 use-after-free。 */
+    for (i = 0; i < MAX_SESSIONS; i++) {
+        if (g_sessions[i] == session) {
+            g_sessions[i] = NULL;
+            break;
+        }
+    }
+    master = session->master;
+    session->master = -1;
+    pid = session->pid;
+    pthread_mutex_unlock(&g_lock);
+
+    if (master >= 0) close(master);
+    if (pid > 0) {
+        kill(pid, SIGHUP);
+        for (i = 0; i < 20; i++) {
+            if (waitpid(pid, &status, WNOHANG) != 0) break;
             usleep(10000);
         }
-        if (waitpid(session->pid, &status, WNOHANG) == 0) {
-            kill(session->pid, SIGKILL);
-            waitpid(session->pid, &status, 0);
+        if (waitpid(pid, &status, WNOHANG) == 0) {
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
         }
     }
     free(session);

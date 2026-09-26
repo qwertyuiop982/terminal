@@ -6,11 +6,11 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * Creates the writable prefix used by the shell.
+ * 创建 shell 使用的可写前缀。
  *
- * HOME is files/home and USR is files/usr. The app targets SDK 28, which is
- * below the Android 10 restriction on execve() inside an app data directory,
- * so commands are installed directly under files/usr/bin.
+ * HOME 是 files/home，USR 是 files/usr。应用 targetSdk 为 28，低于
+ * Android 10 对应用数据目录内 execve() 的限制，因此 dash 可以直接安装到
+ * files/usr/bin 下执行。
  */
 object Rootfs {
     fun ensure(context: Context): Layout {
@@ -45,7 +45,8 @@ object Rootfs {
             File(usr, "tmp"),
         )
         directories.forEach { it.mkdirs() }
-        writeIfMissing(File(usr, "etc/passwd"), passwd())
+        val shellFile = shell(context, usr)
+        writeIfMissing(File(usr, "etc/passwd"), passwd(home, shellFile))
         writeIfMissing(File(usr, "etc/group"), group())
         writeIfMissing(File(usr, "etc/hosts"), hosts())
         writeIfMissing(File(usr, "etc/resolv.conf"), resolv())
@@ -59,7 +60,7 @@ object Rootfs {
         writeIfMissing(File(usr, "var/log/dpkg.log"), "")
         File(usr, "tmp").setWritable(true, true)
         File(usr, "var/tmp").setWritable(true, true)
-        return Layout(home, usr, shell(context, usr))
+        return Layout(home, usr, shellFile)
     }
 
     fun environment(layout: Layout): Array<String> {
@@ -76,6 +77,8 @@ object Rootfs {
             "USR=$usr",
             "PREFIX=$usr",
             "TMPDIR=$usr/tmp",
+            // dash -i 是交互式 shell，只读取 $ENV；没有这一项 /etc/profile 不会生效。
+            "ENV=$usr/etc/profile",
             "SHELL=${layout.shell.absolutePath}",
             "PATH=$path",
             "LANG=C.UTF-8",
@@ -109,13 +112,10 @@ object Rootfs {
         context.assets.open(asset).use { input ->
             FileOutputStream(temporary).use { output -> input.copyTo(output) }
         }
-        if (!destination.isFile || destination.length() != temporary.length()) {
-            if (destination.exists()) destination.delete()
-            if (!temporary.renameTo(destination)) {
-                temporary.copyTo(destination, overwrite = true)
-                temporary.delete()
-            }
-        } else {
+        // 始终覆盖安装：仅按文件长度比较无法感知同体积的新二进制。
+        if (destination.exists()) destination.delete()
+        if (!temporary.renameTo(destination)) {
+            temporary.copyTo(destination, overwrite = true)
             temporary.delete()
         }
         destination.setReadable(true, false)
@@ -126,8 +126,8 @@ object Rootfs {
         if (!file.exists()) file.writeText(content)
     }
 
-    private fun passwd(): String {
-        return "terminal:x:0:0:terminal:/data/data/com.terminal/files/home:/data/data/com.terminal/files/usr/bin/sh\n"
+    private fun passwd(home: File, shell: File): String {
+        return "terminal:x:0:0:terminal:${home.absolutePath}:${shell.absolutePath}\n"
     }
 
     private fun group(): String = "terminal:x:0:terminal\n"

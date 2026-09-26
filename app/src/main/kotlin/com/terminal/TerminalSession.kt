@@ -15,6 +15,8 @@ class TerminalSession(
     private val onExit: (Int) -> Unit,
 ) : AutoCloseable {
     private val running = AtomicBoolean(true)
+    val isRunning: Boolean get() = running.get()
+
     private val reader = Thread({
         val buffer = ByteArray(8192)
         try {
@@ -23,17 +25,17 @@ class TerminalSession(
                 when {
                     count > 0 -> onOutput(String(buffer, 0, count, charset))
                     count == 0 -> {
+                        // 非阻塞 fd 暂无数据：查一次进程状态再短暂休眠。
                         val status = pty.poll()
                         if (status != -2) {
-                            running.set(false)
-                            onExit(status)
+                            if (running.getAndSet(false)) onExit(status)
                             break
                         }
                         Thread.sleep(16)
                     }
                     else -> {
-                        running.set(false)
-                        onExit(pty.poll().takeIf { it >= 0 } ?: 1)
+                        val status = pty.poll().takeIf { it >= 0 } ?: 1
+                        if (running.getAndSet(false)) onExit(status)
                         break
                     }
                 }
@@ -41,6 +43,8 @@ class TerminalSession(
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
         } catch (_: IOException) {
+            if (running.getAndSet(false)) onExit(1)
+        } catch (_: Exception) {
             if (running.getAndSet(false)) onExit(1)
         }
     }, "terminal-pty").also { it.isDaemon = true }
@@ -53,24 +57,36 @@ class TerminalSession(
         if (!running.get()) return
         val bytes = text.toByteArray(charset)
         var offset = 0
-        while (offset < bytes.size) {
-            val wrote = pty.write(bytes.copyOfRange(offset, bytes.size))
-            if (wrote < 0) break
-            if (wrote == 0) {
-                Thread.sleep(8)
-                continue
+        var retries = 0
+        while (offset < bytes.size && running.get()) {
+            try {
+                val wrote = pty.write(bytes.copyOfRange(offset, bytes.size))
+                if (wrote < 0) break
+                if (wrote == 0) {
+                    retries++
+                    if (retries > 50) break
+                    Thread.sleep(8)
+                    continue
+                }
+                retries = 0
+                offset += wrote
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                break
+            } catch (e: Exception) {
+                break
             }
-            offset += wrote
         }
     }
 
     fun resize(rows: Int, cols: Int) {
-        pty.resize(rows, cols)
+        if (running.get()) pty.resize(rows, cols)
     }
 
     override fun close() {
-        running.set(false)
-        pty.close()
-        reader.interrupt()
+        if (running.getAndSet(false)) {
+            pty.close()
+            reader.interrupt()
+        }
     }
 }
