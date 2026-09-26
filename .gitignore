@@ -10,3 +10,4 @@ captures/
 .kotlin/
 app/src/main/obj/
 app/src/main/libs/
+build-ext/
