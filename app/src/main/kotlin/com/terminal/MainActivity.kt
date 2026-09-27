@@ -1,117 +1,95 @@
 package com.terminal
 
 import android.os.Bundle
-import android.text.Editable
-import android.text.TextWatcher
-import android.view.KeyEvent
-import android.view.inputmethod.EditorInfo
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.terminal.databinding.ActivityMainBinding
-import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
-    private val io: ExecutorService = Executors.newSingleThreadExecutor()
+    private val io = Executors.newSingleThreadExecutor()
     @Volatile private var session: TerminalSession? = null
-    private val screen = StringBuilder()
-
-    /** 还原输入框内容时抑制 TextWatcher，避免 submitInput() 递归触发。 */
-    private var restoringInput = false
+    @Volatile private var destroyed = false
+    private val pendingInput = StringBuilder()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-        binding.input.setOnEditorActionListener { _, actionId, event ->
-            val enter = actionId == EditorInfo.IME_ACTION_SEND ||
-                (event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)
-            if (!enter) return@setOnEditorActionListener false
-            submitInput()
-            true
+        binding.terminal.onInput = { text -> sendInput(text) }
+        binding.terminal.onResize = { cols, rows ->
+            session?.let { current -> io.execute { current.resize(rows, cols) } }
         }
-        binding.send.setOnClickListener { submitInput() }
-        binding.input.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
-            override fun afterTextChanged(s: Editable?) {
-                if (restoringInput) return
-                if (s != null && s.endsWith("\n")) submitInput()
-            }
-        })
-        startShell()
+        binding.terminal.onControlChanged = { binding.ctrl.isSelected = it }
+        binding.ctrl.setOnClickListener { binding.terminal.control = !binding.terminal.control }
+        binding.escape.setOnClickListener { binding.terminal.send("\u001b") }
+        binding.tab.setOnClickListener { binding.terminal.send("\t") }
+        binding.left.setOnClickListener { binding.terminal.send("\u001b[D") }
+        binding.down.setOnClickListener { binding.terminal.send("\u001b[B") }
+        binding.up.setOnClickListener { binding.terminal.send("\u001b[A") }
+        binding.right.setOnClickListener { binding.terminal.send("\u001b[C") }
+        binding.terminal.post { startShell() }
     }
 
     private fun startShell() {
+        if (destroyed) return
+        val cols = binding.terminal.columns
+        val rows = binding.terminal.rows
         io.execute {
-            // 执行器是单线程的，在任务内部再检查一次，防止连续两次
-            // startShell() 竞态创建出两个 dash 进程。
-            if (session?.isRunning == true) return@execute
+            if (destroyed || session?.isRunning == true) return@execute
+            session?.close()
             try {
                 val layout = Rootfs.ensure(this)
+                if (destroyed) return@execute
                 val pty = Pty.open(
                     shell = layout.shell.absolutePath,
                     cwd = layout.home.absolutePath,
                     environment = Rootfs.environment(layout),
-                    rows = 40,
-                    cols = 100,
+                    rows = rows,
+                    cols = cols,
                 )
                 val created = TerminalSession(
                     pty = pty,
-                    onOutput = { text -> runOnUiThread { append(text) } },
+                    onOutput = { bytes -> runOnUiThread { if (!destroyed) binding.terminal.append(bytes) } },
                     onExit = { code ->
-                        runOnUiThread { append("\n[dash exited: $code]\n") }
+                        runOnUiThread { if (!destroyed) binding.terminal.showMessage("\r\n[dash exited: $code]\r\n") }
                     },
                 )
                 session = created
                 created.start()
                 runOnUiThread {
-                    append("terminal 1.0\n")
-                    append("dash 0.5.13.5\n")
-                    append("HOME=${layout.home.absolutePath}\n")
-                    append("USR=${layout.usr.absolutePath}\n")
+                    if (!destroyed) {
+                        binding.terminal.showMessage("terminal 1.0\r\n")
+                        val input = pendingInput.toString()
+                        pendingInput.clear()
+                        if (input.isNotEmpty()) io.execute { created.write(input) }
+                    }
                 }
             } catch (error: Exception) {
                 runOnUiThread {
-                    append("failed to start dash: ${error.message}\n")
-                    Toast.makeText(this, error.message, Toast.LENGTH_LONG).show()
+                    if (!destroyed) {
+                        binding.terminal.showMessage("failed to start dash: ${error.message}\r\n")
+                        Toast.makeText(this, error.message, Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         }
     }
 
-    private fun submitInput() {
-        val text = binding.input.text?.toString().orEmpty()
-        if (text.isEmpty()) return
-
-        val currentSession = session
-        if (currentSession == null || !currentSession.isRunning) {
-            // 会话不可用时不要丢弃用户输入：恢复文本并重新拉起 shell。
-            restoringInput = true
-            binding.input.setText(text)
-            binding.input.setSelection(text.length)
-            restoringInput = false
+    private fun sendInput(text: String) {
+        val current = session
+        if (current == null || !current.isRunning) {
+            pendingInput.append(text)
             startShell()
-            return
+        } else {
+            io.execute { current.write(text) }
         }
-        binding.input.text = null
-
-        val line = if (text.endsWith("\n")) text else text + "\n"
-        io.execute { currentSession.write(line) }
-    }
-
-    private fun append(text: String) {
-        screen.append(text)
-        if (screen.length > 80_000) screen.delete(0, screen.length - 60_000)
-        binding.transcript.text = screen
-        binding.scroll.post { binding.scroll.fullScroll(android.view.View.FOCUS_DOWN) }
     }
 
     override fun onDestroy() {
+        destroyed = true
         session?.close()
-        // shutdown() 而不是 shutdownNow()：让排队中的写操作自然结束，
-        // 会话生命周期由 TerminalSession/Pty 自行维护。
         io.shutdown()
         super.onDestroy()
     }

@@ -1,0 +1,11 @@
+--- a/src/bltin/test.c
++++ b/src/bltin/test.c
+@@ -537 +537,7 @@
+-	return !faccessat(AT_FDCWD, path, mode, AT_EACCESS);
++#ifdef __ANDROID__
++	/* On Android, the app's real and effective UIDs match; API 24 rejects AT_EACCESS. */
++	return !access(path, mode);
++#else
++	return !faccessat(AT_FDCWD, path, mode, AT_EACCESS);
++#endif
++

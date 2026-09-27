@@ -1,0 +1,16 @@
+--- a/include/platform.h
++++ b/include/platform.h
+@@ -398 +398 @@
+-# define BB_ADDITIONAL_PATH ":/system/sbin:/system/bin:/system/xbin"
++# define BB_ADDITIONAL_PATH ""
+--- a/include/libbb.h
++++ b/include/libbb.h
+@@ -2479 +2479 @@
+-#define BB_PATH_ROOT_PATH "PATH=/sbin:/usr/sbin:/bin:/usr/bin" BB_ADDITIONAL_PATH
++#define BB_PATH_ROOT_PATH "PATH=/data/data/com.terminal/files/usr/bin:/data/data/com.terminal/files/usr/sbin:/data/data/com.terminal/files/usr/libexec" BB_ADDITIONAL_PATH
+@@ -2482,4 +2482 @@
+-/* util-linux manpage says /sbin:/bin:/usr/sbin:/usr/bin,
+- * but I want to save a few bytes here:
+- */
+-#define bb_default_path      (bb_PATH_root_path + sizeof("PATH=/sbin:/usr/sbin"))
++#define bb_default_path (bb_PATH_root_path + sizeof("PATH"))

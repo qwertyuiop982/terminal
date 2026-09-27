@@ -1,0 +1,37 @@
+--- a/apt-pkg/deb/dpkgpm.cc
++++ b/apt-pkg/deb/dpkgpm.cc
+@@ -473 +473 @@
+-	 Args[0] = "/bin/sh";
++	 Args[0] = "/data/data/com.terminal/files/usr/bin/sh";
+--- a/apt-pkg/contrib/fileutl.cc
++++ b/apt-pkg/contrib/fileutl.cc
+@@ -3400 +3400 @@
+-	 setenv("SHELL", "/bin/sh", 1);
++	 setenv("SHELL", "/data/data/com.terminal/files/usr/bin/sh", 1);
+--- a/apt-private/private-json-hooks.cc
++++ b/apt-private/private-json-hooks.cc
+@@ -442 +442 @@
+-	 Args[0] = "/bin/sh";
++	 Args[0] = "/data/data/com.terminal/files/usr/bin/sh";
+--- a/methods/rsh.cc
++++ b/methods/rsh.cc
+@@ -168 +168 @@
+-      Args[i++] = "/bin/sh";
++      Args[i++] = "/data/data/com.terminal/files/usr/bin/sh";
+--- a/cmdline/apt-key.in
++++ b/cmdline/apt-key.in
+@@ -1 +1 @@
+-#!/bin/sh
++#!/data/data/com.terminal/files/usr/bin/sh
+@@ -528 +528 @@
+-	echo "#!/bin/sh
++	echo "#!/data/data/com.terminal/files/usr/bin/sh
+@@ -540 +540 @@
+-	echo "#!/bin/sh
++	echo "#!/data/data/com.terminal/files/usr/bin/sh
+@@ -546 +546 @@
+-	echo "#!/bin/sh
++	echo "#!/data/data/com.terminal/files/usr/bin/sh
+@@ -693 +693 @@
+-    echo "#!/bin/sh
++    echo "#!/data/data/com.terminal/files/usr/bin/sh

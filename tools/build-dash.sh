@@ -2,7 +2,7 @@
 # Rebuild dash 0.5.13.5 for Android bionic.
 # Source: Herbert Xu, http://gondor.apana.org.au/~herbert/dash/files/
 # SPDX: BSD-3-Clause, see third_party/dash/COPYING
-set -u
+set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 NDK=${ANDROID_NDK_HOME:-/root/Android/ndk/29.0.14206865}
 API=${ANDROID_API:-24}
@@ -12,7 +12,10 @@ if [ ! -x "$BIN/clang" ]; then
 fi
 TARBALL="$ROOT/third_party/dash/dash-0.5.13.5.tar.gz"
 PATCH="$ROOT/third_party/dash/android-bionic.patch.py"
+PRIVATE_PATH_PATCH="$ROOT/third_party/dash/android-private-path.patch"
+ACCESS_PATCH="$ROOT/third_party/dash/android-access.patch"
 OUT="$ROOT/app/src/main/assets/bin"
+(cd "$ROOT/third_party/dash" && sha256sum -c SHA256SUMS)
 WORKDIR=${TMPDIR:-/tmp}/terminal-dash-build
 rm -rf "$WORKDIR"
 mkdir -p "$WORKDIR" "$OUT"
@@ -33,6 +36,8 @@ build_one() {
     CFLAGS='-O2 -fPIE' LDFLAGS='-pie -Wl,-z,max-page-size=16384' \
     ./configure --host="$host" --build="$(uname -m)-unknown-linux-gnu" --prefix=/usr
   python3 "$PATCH" "$PWD"
+  patch --batch --fuzz=0 -p1 < "$PRIVATE_PATH_PATCH"
+  patch --batch --fuzz=0 -p1 < "$ACCESS_PATCH"
   PATH="$BIN:$PATH" make -j"$(nproc)"
   "$BIN/llvm-strip" -s src/dash
   cp -f src/dash "$OUT/$asset"

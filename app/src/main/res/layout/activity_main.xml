@@ -6,52 +6,70 @@
     android:fitsSystemWindows="true"
     android:orientation="vertical">
 
-    <ScrollView
-        android:id="@+id/scroll"
+    <com.terminal.TerminalSurface
+        android:id="@+id/terminal"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        android:fillViewport="true"
-        android:padding="12dp">
-
-        <TextView
-            android:id="@+id/transcript"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:fontFamily="monospace"
-            android:textColor="#D7E0EA"
-            android:textIsSelectable="true"
-            android:textSize="13sp" />
-    </ScrollView>
+        android:layout_weight="1" />
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:padding="8dp">
-
-        <EditText
-            android:id="@+id/input"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:background="#1B2128"
-            android:fontFamily="monospace"
-            android:hint="@string/command_hint"
-            android:imeOptions="actionSend"
-            android:inputType="text"
-            android:minHeight="48dp"
-            android:padding="12dp"
-            android:singleLine="true"
-            android:textColor="#F2F6FA"
-            android:textColorHint="#708090" />
+        android:layout_height="48dp"
+        android:background="#20272B"
+        android:orientation="horizontal">
 
         <Button
-            android:id="@+id/send"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:text="@string/send" />
+            android:id="@+id/ctrl"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:text="@string/ctrl" />
+        <Button
+            android:id="@+id/escape"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:text="@string/escape" />
+        <Button
+            android:id="@+id/tab"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:text="@string/tab" />
+        <Button
+            android:id="@+id/left"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:contentDescription="@string/left"
+            android:text="@string/left_symbol" />
+        <Button
+            android:id="@+id/down"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:contentDescription="@string/down"
+            android:text="@string/down_symbol" />
+        <Button
+            android:id="@+id/up"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:contentDescription="@string/up"
+            android:text="@string/up_symbol" />
+        <Button
+            android:id="@+id/right"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:contentDescription="@string/right"
+            android:text="@string/right_symbol" />
     </LinearLayout>
 </LinearLayout>

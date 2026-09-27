@@ -1,6 +1,6 @@
 #!/bin/sh
-# Cross-compile tcc (mob), dpkg (1.22.6) and their compression libraries
-# for Android with the NDK, then stage everything under app/src/main/assets.
+# Cross-compile tcc (mob), dpkg (1.22.6) and their compression libraries.
+# Only final/ is copied into APK assets; optional/tcc is packaged separately.
 #
 # Reference: termux-packages packages/tcc/build.sh (two-stage build with the
 # host tcc kept for libtcc1.a) and packages/dpkg/build.sh (configure args).
@@ -19,15 +19,16 @@ TARBALL_DIR="$ROOT/third_party"
 WORK="$ROOT/build-ext"
 SRC="$WORK/src"
 OUT="$WORK/out"
-ASSETS="$ROOT/app/src/main/assets"
 JOBS=$(nproc)
 
 if [ ! -x "$BIN/clang" ]; then
   echo "NDK toolchain not found at $BIN" >&2
   exit 1
 fi
+# Work on a fresh checkout too; source archives are checked before extracting.
+(cd "$TARBALL_DIR" && sha256sum -c SHA256SUMS)
+mkdir -p "$SRC" "$OUT"
 
-mkdir -p "$OUT"
 
 # ---------- ABI selection ----------
 build_all=false
@@ -72,18 +73,19 @@ abi_libdirs() {
     armeabi-v7a) echo "/system/lib:/system/vendor/lib" ;;
   esac
 }
-# dpkg calls this arch triplet; Termux uses the same names.
-abi_dpkg_arch() {
+# dpkg's architecture tables use Debian GNU triples even though CC targets
+# Android. Keep this separate from HOST, which names the NDK sysroot.
+abi_config_host() {
   case "$1" in
-    arm64-v8a)   echo "linux-arm64" ;;
-    armeabi-v7a) echo "linux-armhf" ;;
+    arm64-v8a)   echo "aarch64-linux-gnu" ;;
+    armeabi-v7a) echo "arm-linux-gnueabihf" ;;
   esac
 }
 
-ABI=$1_TARGET 2>/dev/null || true
 for ABI in $ABIS; do
   TRIPLE=$(abi_triple "$ABI")
   HOST=$(abi_host_triple "$ABI")
+  DPKG_HOST=$(abi_config_host "$ABI")
   CPU=$(abi_cpu "$ABI")
   CC="$BIN/$TRIPLE-clang"
   DEST="$OUT/$ABI"
@@ -108,7 +110,8 @@ for ABI in $ABIS; do
     make -j"$JOBS" -f Makefile-libbz2_so \
       CC="$CC" AR="$BIN/llvm-ar" RANLIB="$BIN/llvm-ranlib" \
       "CFLAGS=$COMMON_FLAGS -fpic" LDFLAGS="$LDFLAGS_COMMON -shared -Wl,-soname -Wl,libbz2.so.1.0"
-    cp -f libbz2.so.1.0 "$STAGE/"
+    mkdir -p "$STAGE/lib"
+    cp -f libbz2.so.1.0 "$STAGE/lib/"
     make -j"$JOBS" bzip2 \
       CC="$CC" AR="$BIN/llvm-ar" RANLIB="$BIN/llvm-ranlib" \
       "CFLAGS=$COMMON_FLAGS" LDFLAGS="$LDFLAGS_COMMON"
@@ -127,14 +130,14 @@ for ABI in $ABIS; do
     CFLAGS="$COMMON_FLAGS" LDFLAGS="$LDFLAGS_COMMON" \
     ./configure --static
     make -j"$JOBS" libz.a
-    # Static-only build: skip all program/example targets so no host-side
-    # link against the missing shared libz ever happens.
-    make -j"$JOBS" -k shared || true
-    cp -f libz.a "$STAGE/" 2>/dev/null || true
+    # Static-only build: skip program/example targets; runtime tools use the
+    # staged archive libraries and do not need zlib's optional shared examples.
+    mkdir -p "$STAGE/lib"
+    cp -f libz.a "$STAGE/lib/" 2>/dev/null || true
     if [ -f libz.so.1.3.1 ]; then
-      cp -f libz.so.1.3.1 "$STAGE/"
-      ln -sf libz.so.1.3.1 "$STAGE/libz.so.1"
-      ln -sf libz.so.1.3.1 "$STAGE/libz.so"
+      cp -f libz.so.1.3.1 "$STAGE/lib/"
+      ln -sf libz.so.1.3.1 "$STAGE/lib/libz.so.1"
+      ln -sf libz.so.1.3.1 "$STAGE/lib/libz.so"
     fi
   )
 
@@ -159,13 +162,14 @@ for ABI in $ABIS; do
       --with-pic
         make -j"$JOBS" -C src/liblzma
     cd src/liblzma
-    cp -f .libs/liblzma.a "$STAGE/"
+    mkdir -p "$STAGE/lib"
+    cp -f .libs/liblzma.a "$STAGE/lib/"
     # libtool on Android emits an unversioned liblzma.so (its SONAME is
     # liblzma.so); provide the usual alias names on top of it.
     if [ -f .libs/liblzma.so ]; then
-      cp -f .libs/liblzma.so "$STAGE/liblzma.so.5.6.3"
-      ln -sf liblzma.so.5.6.3 "$STAGE/liblzma.so.5"
-      ln -sf liblzma.so.5.6.3 "$STAGE/liblzma.so"
+      cp -f .libs/liblzma.so "$STAGE/lib/liblzma.so.5.6.3"
+      ln -sf liblzma.so.5.6.3 "$STAGE/lib/liblzma.so.5"
+      ln -sf liblzma.so.5.6.3 "$STAGE/lib/liblzma.so"
     fi
     cd ../../..
     # Compression headers are needed later when compiling dpkg against the
@@ -176,7 +180,6 @@ for ABI in $ABIS; do
     cp -rf "$Z/lzma" "$STAGE/include/"
     cp -f "$SRC/zlib-$ABI/zlib.h" "$SRC/zlib-$ABI/zconf.h" "$STAGE/include/"
     cp -f "$SRC/bz2-$ABI/bzlib.h" "$STAGE/include/"
-    cp -f "$SRC/zstd-$ABI/lib/zstd.h" "$STAGE/include/"
   )
 
   # ---------- zstd ----------
@@ -189,7 +192,9 @@ for ABI in $ABIS; do
     make -j"$JOBS" libzstd.a \
       CC="$CC" AR="$BIN/llvm-ar" RANLIB="$BIN/llvm-ranlib" \
       CFLAGS="$COMMON_FLAGS" LDFLAGS="$LDFLAGS_COMMON"
-    cp -f libzstd.a "$STAGE/"
+    mkdir -p "$STAGE/lib"
+    cp -f libzstd.a "$STAGE/lib/"
+    cp -f zstd.h "$STAGE/include/"
   )
 
   # ---------- libmd (md5/sha digests required by dpkg) ----------
@@ -205,15 +210,17 @@ for ABI in $ABIS; do
     CFLAGS="$COMMON_FLAGS" LDFLAGS="$LDFLAGS_COMMON" \
     ../configure --host="$HOST" --disable-shared --disable-doc
     make -j"$JOBS" -C src
-    cp -f src/.libs/libmd.a "$STAGE/"
+    mkdir -p "$STAGE/lib"
+    cp -f src/.libs/libmd.a "$STAGE/lib/"
     if [ -f src/.libs/libmd.so.0.1.0 ] || [ -f src/.libs/libmd.so ]; then
+      mkdir -p "$STAGE/lib"
       SOF=$(ls src/.libs/libmd.so* 2>/dev/null | grep -v '\.so\.' | head -1)
-      [ -f "$SOF" ] && cp -f "$SOF" "$STAGE/libmd.so.0.1.0" && \
-        ln -sf libmd.so.0.1.0 "$STAGE/libmd.so.0" && \
-        ln -sf libmd.so.0.1.0 "$STAGE/libmd.so"
+      [ -f "$SOF" ] && cp -f "$SOF" "$STAGE/lib/libmd.so.0.1.0" && \
+        ln -sf libmd.so.0.1.0 "$STAGE/lib/libmd.so.0" && \
+        ln -sf libmd.so.0.1.0 "$STAGE/lib/libmd.so"
     fi
     mkdir -p "$STAGE/include"
-    cp -f ../src/*.h "$STAGE/include/" 2>/dev/null || true
+    cp -f ../include/*.h "$STAGE/include/"
   )
 
   # ---------- tcc (two-stage, per Termux) ----------
@@ -301,29 +308,29 @@ CEOF
     # Do not run `make install`; stage files manually so nothing depends on
     # the host layout.
     "$BIN/llvm-strip" -s tcc
-    cp -f tcc "$STAGE/tcc"
-    mkdir -p "$STAGE/lib/tcc"
+    TCC_PACKAGE="$DEST/optional/tcc"
+    mkdir -p "$TCC_PACKAGE/bin" "$TCC_PACKAGE/lib/tcc/crt" "$TCC_PACKAGE/include"
+    cp -f tcc "$TCC_PACKAGE/bin/tcc"
     if [ -f libtcc1.a ]; then
-      cp -f libtcc1.a "$STAGE/lib/tcc/libtcc1.a"
+      cp -f libtcc1.a "$TCC_PACKAGE/lib/tcc/libtcc1.a"
     fi
     if [ -f include/tcclib.h ]; then
-      cp -f include/tcclib.h "$STAGE/include/"
+      cp -f include/tcclib.h "$TCC_PACKAGE/include/"
     fi
-    # NDK bionic headers + crt objects so tcc can compile real programs on
-    # device (mirrors Termux shipping the sysroot pieces tcc needs).
-    mkdir -p "$STAGE/lib/tcc/crt"
+    # NDK bionic headers and CRT are required by on-device tcc, not by the APK.
     SYSROOT="$NDK/toolchains/llvm/prebuilt/linux-$(uname -m)/sysroot"
-    cp -f "$SYSROOT/usr/lib/$HOST/$API/"crt*.o "$STAGE/lib/tcc/crt/" 2>/dev/null || true
-    cp -f "$SYSROOT/usr/lib/$HOST/$API/"libgcc.a "$STAGE/lib/tcc/" 2>/dev/null || true
-    mkdir -p "$STAGE/include/$HOST"
+    cp -f "$SYSROOT/usr/lib/$HOST/$API/"crt*.o "$TCC_PACKAGE/lib/tcc/crt/"
+    if [ -f "$SYSROOT/usr/lib/$HOST/$API/libgcc.a" ]; then
+      cp -f "$SYSROOT/usr/lib/$HOST/$API/libgcc.a" "$TCC_PACKAGE/lib/tcc/"
+    fi
     for d in "$SYSROOT/usr/include"/*; do
       b=$(basename "$d")
       case "$b" in
         aarch64-linux-android|arm-linux-androideabi|i686-linux-android|x86_64-linux-android) ;;
-        *) cp -rf "$d" "$STAGE/include/" 2>/dev/null || true ;;
+        *) cp -rf "$d" "$TCC_PACKAGE/include/" ;;
       esac
     done
-    cp -rf "$SYSROOT/usr/include/$HOST"/* "$STAGE/include/" 2>/dev/null || true
+    cp -rf "$SYSROOT/usr/include/$HOST"/. "$TCC_PACKAGE/include/"
   )
 
   # ---------- dpkg ----------
@@ -333,6 +340,14 @@ CEOF
     tar -xJf "$TARBALL_DIR/dpkg/dpkg-1.22.6.tar.xz"
     mv dpkg-1.22.6 "dpkg-$ABI"
     cd "dpkg-$ABI"
+    # Android exposes the SYNC_FILE_RANGE_* constants in some API headers but
+    # does not provide the glibc-style sync_file_range() declaration. Dpkg
+    # treats this as a writeback hint and already fsyncs later, so disable only
+    # that optional optimization for the Android build.
+    sed -i \
+      -e 's/^#if defined(SYNC_FILE_RANGE_WRITE)$/#if 0/' \
+      -e 's/^#if defined(SYNC_FILE_RANGE_WAIT_BEFORE)$/#if 0/' \
+      src/main/archives.c
     mkdir -p build-"$ABI"
     cd build-"$ABI"
 
@@ -341,8 +356,8 @@ CEOF
     mkdir -p "$ZLIB/pkgconfig"
     cat > "$ZLIB/pkgconfig/zlib.pc" <<EOF
 prefix=$ZLIB
-libdir=\${prefix}
-includedir=\${prefix}
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
 
 Name: zlib
 Description: zlib compression library
@@ -352,8 +367,8 @@ Cflags: -I\${includedir}
 EOF
     cat > "$ZLIB/pkgconfig/liblzma.pc" <<EOF
 prefix=$ZLIB
-libdir=\${prefix}
-includedir=\${prefix}
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
 
 Name: liblzma
 Description: XZ-format compression library
@@ -363,8 +378,8 @@ Cflags: -I\${includedir}
 EOF
     cat > "$ZLIB/pkgconfig/libzstd.pc" <<EOF
 prefix=$ZLIB
-libdir=\${prefix}
-includedir=\${prefix}
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
 
 Name: zstd
 Description: Zstandard compression library
@@ -375,15 +390,14 @@ EOF
 
     CC="$CC" AR="$BIN/llvm-ar" RANLIB="$BIN/llvm-ranlib" STRIP="$BIN/llvm-strip" \
     CPPFLAGS="-I$STAGE/include" \
-    LDFLAGS="-L$STAGE $LDFLAGS_COMMON" \
+    LDFLAGS="-L$STAGE/lib $LDFLAGS_COMMON" \
     LIBS="-lmd" \
     CFLAGS="$COMMON_FLAGS" \
     ../configure \
-      --host="$HOST" \
+      --host="$DPKG_HOST" \
       --prefix="$DEV_PREFIX" \
       --localstatedir="$DEV_PREFIX/var" \
       --sysconfdir="$DEV_PREFIX/etc" \
-      --with-mount-point=/system/bin/mount \
       --disable-dselect \
       --disable-largefile \
       --disable-shared \
@@ -393,17 +407,47 @@ EOF
       ac_cv_lib_selinux_setexecfilecon=no \
       dpkg_cv_c99_snprintf=yes
     make -j"$JOBS"
-    # Install into a scratch tree, then copy the runtime bits we need.
-    make install DESTDIR="$DEST/dpkg-stage" >/dev/null
+    # Do not run the full install target: it also copies every developer
+    # script and man page and is needlessly slow for an on-device runtime.
+    # Stage only the dpkg executables and data needed by package operations.
+    DPKG_BUILD="$SRC/dpkg-$ABI/build-$ABI"
+    DPKG_ROOT="$DEST/dpkg-stage$DEV_PREFIX"
+    mkdir -p "$DPKG_ROOT/bin" "$DPKG_ROOT/libexec/dpkg" \
+      "$DPKG_ROOT/share/dpkg" "$DPKG_ROOT/etc/dpkg"
+    for program in dpkg dpkg-deb dpkg-divert dpkg-query dpkg-split \
+        dpkg-statoverride dpkg-trigger; do
+      cp -f "$DPKG_BUILD/src/$program" "$DPKG_ROOT/bin/"
+    done
+    cp -f "$DPKG_BUILD/utils/update-alternatives" "$DPKG_ROOT/bin/"
+    # Kernel shebang lookup ignores PATH, so helpers must name our private dash.
+    for script in dpkg-maintscript-helper dpkg-realpath; do
+      [ "$(sed -n '1p' "$DPKG_BUILD/src/$script")" = '#!/bin/sh' ] || {
+        echo "unexpected shebang in $script" >&2; exit 1;
+      }
+      sed "1s|^#!/bin/sh$|#!$DEV_PREFIX/bin/sh|" \
+        "$DPKG_BUILD/src/$script" > "$DPKG_ROOT/bin/$script"
+      chmod 755 "$DPKG_ROOT/bin/$script"
+    done
+    for helper in dpkg-db-backup dpkg-db-keeper; do
+      cp -f "$DPKG_BUILD/src/$helper" "$DPKG_ROOT/libexec/dpkg/"
+    done
+    mkdir -p "$DPKG_ROOT/share/dpkg/sh"
+    cp -f "$SRC/dpkg-$ABI/src/sh/dpkg-error.sh" "$DPKG_ROOT/share/dpkg/sh/"
+    cp -f "$SRC/dpkg-$ABI/data/"* "$DPKG_ROOT/share/dpkg/"
+    if [ -f "$SRC/dpkg-$ABI/debian/dpkg.cfg" ]; then
+      cp -f "$SRC/dpkg-$ABI/debian/dpkg.cfg" "$DPKG_ROOT/etc/dpkg/"
+    fi
   )
 
   # ---------- collect and package ----------
   (
     cd "$DEST"
-    # dpkg binaries live under dpkg-stage/<devprefix>/bin
+    # Keep the directory layout explicit. The file names are never rewritten;
+    # the generated asset task later preserves every basename, including
+    # compatibility aliases such as liblzma.so.5.
     mkdir -p final/bin final/lib final/etc final/share
     if [ -d dpkg-stage ]; then
-      find dpkg-stage -type f -path '*/bin/*' | while read -r f; do
+      find dpkg-stage \( -type f -o -type l \) -path '*/bin/*' | while read -r f; do
         cp -f "$f" final/bin/
       done
       find dpkg-stage -type d -path '*share/dpkg' | head -1 | while read -r d; do
@@ -419,35 +463,25 @@ EOF
         mkdir -p final/var; cp -rf "$d" final/var/ 2>/dev/null || true
       done
     fi
-    # Stage everything the shell needs at runtime.
-    for f in "$STAGE"/*; do
-      b=$(basename "$f")
-      case "$b" in
-        lib*.so*|lib*.a) cp -rf "$f" final/lib/ ;;
-        include)         cp -rf "$f" final/include ;;
-        lib)             ;;
-        pkgconfig)       ;;
-        *)               cp -f "$f" final/bin/ ;;
-      esac
+    # Stage everything the shell needs at runtime without classifying by
+    # lib*.so/lib*.a. Producers place files in their final prefix directory;
+    # root-level programs are the only files promoted to bin here.
+    for d in bin sbin lib libexec include share etc var; do
+      if [ -d "$STAGE/$d" ]; then
+        mkdir -p "final/$d"
+        cp -rf "$STAGE/$d/." "final/$d/"
+      fi
     done
-    [ -d "$STAGE/lib" ] && cp -rf "$STAGE/lib/." final/lib/
+    for f in "$STAGE"/*; do
+      [ -f "$f" ] || [ -L "$f" ] || continue
+      cp -f "$f" final/bin/
+    done
     # Executable bits for everything in bin.
     for f in final/bin/*; do
       [ -f "$f" ] && chmod 755 "$f"
     done
-    # Package as one tar so the APK keeps a single entry per ABI.
-    tar -czf "$ABI.tar.gz" -C final .
-    echo "staged $ABI: $(du -sh final | cut -f1)"
+    echo "staged $ABI: $(du -sh final | cut -f1) at $DEST/final"
   )
 done
 
-# ---------- stage into assets ----------
-STAGE_ASSETS="$ASSETS/prefix"
-mkdir -p "$STAGE_ASSETS"
-for ABI in $ABIS; do
-  cp -f "$OUT/$ABI/$ABI.tar.gz" "$STAGE_ASSETS/prefix-$ABI.tar.gz"
-done
-( cd "$STAGE_ASSETS" && sha256sum prefix-*.tar.gz > SHA256SUMS )
-
-echo "done. assets at $STAGE_ASSETS:"
-ls -la "$STAGE_ASSETS"
+echo "done. staged trees are under $OUT"

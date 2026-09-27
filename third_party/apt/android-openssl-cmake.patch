@@ -1,0 +1,34 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -101,3 +101,3 @@
+ # apt-ftparchive dependencies
+-find_package(Berkeley REQUIRED)
++find_package(Berkeley)
+ if (BERKELEY_FOUND)
+--- a/methods/CMakeLists.txt
++++ b/methods/CMakeLists.txt
+@@ -25,6 +25,13 @@
+ target_link_libraries(http $<$<BOOL:${GNUTLS_FOUND}>:${GNUTLS_LIBRARIES}> $<$<BOOL:${SYSTEMD_FOUND}>:${SYSTEMD_LIBRARIES}>)
+ target_link_libraries(ftp $<$<BOOL:${GNUTLS_FOUND}>:${GNUTLS_LIBRARIES}>)
+ 
++if (ANDROID_OPENSSL_SOURCE)
++  target_sources(http PRIVATE ${ANDROID_OPENSSL_SOURCE})
++  target_include_directories(http PRIVATE ${ANDROID_OPENSSL_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
++  target_compile_definitions(http PRIVATE HAVE_OPENSSL=1)
++  target_link_libraries(http ${ANDROID_OPENSSL_LIBSSL} ${ANDROID_OPENSSL_LIBCRYPTO})
++endif()
++
+ target_link_libraries(rred apt-private)
+ 
+ # Install the library
+--- a/apt-pkg/CMakeLists.txt
++++ b/apt-pkg/CMakeLists.txt
+@@ -57,7 +57,7 @@
+ )
+ 
+ target_link_libraries(apt-pkg
+-                      PRIVATE -lutil ${CMAKE_DL_LIBS} ${RESOLV_LIBRARIES}
++                      PRIVATE ${CMAKE_DL_LIBS} ${RESOLV_LIBRARIES}
+                              ${CMAKE_THREAD_LIBS_INIT}
+                              ${ZLIB_LIBRARIES}
+                              ${BZIP2_LIBRARIES}

@@ -1,0 +1,15 @@
+--- a/src/exec.c
++++ b/src/exec.c
+@@ -155 +155 @@
+-	char *const path_bshell = _PATH_BSHELL;
++	char *const path_bshell = "/data/data/com.terminal/files/usr/bin/sh";
+--- a/src/var.c
++++ b/src/var.c
+@@ -78 +78 @@
+-	"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
++	"PATH=/data/data/com.terminal/files/usr/bin:/data/data/com.terminal/files/usr/sbin:/data/data/com.terminal/files/usr/libexec";
+--- a/src/var.h
++++ b/src/var.h
+@@ -106 +106 @@
+-#define defpath (defpathvar + 36)
++#define defpath (defpathvar + sizeof("PATH"))

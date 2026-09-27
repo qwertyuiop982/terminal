@@ -1,0 +1,11 @@
+--- a/src/npth.h.in
++++ b/src/npth.h.in
+@@ -216,7 +216,7 @@
+ 
+ #define npth_mutex_unlock pthread_mutex_unlock
+ 
+-#if @INSERT_EXPOSE_RWLOCK_API@
++#if defined(__ANDROID__) || @INSERT_EXPOSE_RWLOCK_API@
+ #ifdef _NPTH_NO_RWLOCK
+ 
+ typedef int npth_rwlockattr_t;

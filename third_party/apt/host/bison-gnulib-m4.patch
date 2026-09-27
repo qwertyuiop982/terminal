@@ -1,0 +1,15 @@
+--- a/configure.ac
++++ b/configure.ac
+@@ -265,7 +265,11 @@
+   [$LEX_IS_FLEX && $FLEX_SUPPORTS_HEADER_OPT && test $bison_cv_cxx_works = yes])
+ AC_PROG_YACC
+ AC_PROG_RANLIB
+-AC_PROG_GNU_M4
++AC_PATH_PROG([M4], [m4])
++AS_IF([test -z "$M4" || ! "$M4" --version | grep -q 'GNU M4'],
++      [AC_MSG_ERROR([GNU M4 is required])])
++M4_GNU=-g
++AC_SUBST([M4_GNU])
+ AC_DEFINE_UNQUOTED([M4], ["$M4"], [Define to the GNU M4 executable name.])
+ AC_DEFINE_UNQUOTED([M4_GNU_OPTION], ["$M4_GNU"], [Define to "-g" if GNU M4
+ supports -g, otherwise to "".])

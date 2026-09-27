@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class TerminalSession(
     private val pty: Pty,
     private val charset: Charset = Charsets.UTF_8,
-    private val onOutput: (String) -> Unit,
+    private val onOutput: (ByteArray) -> Unit,
     private val onExit: (Int) -> Unit,
 ) : AutoCloseable {
     private val running = AtomicBoolean(true)
@@ -23,7 +23,7 @@ class TerminalSession(
             while (running.get()) {
                 val count = pty.read(buffer)
                 when {
-                    count > 0 -> onOutput(String(buffer, 0, count, charset))
+                    count > 0 -> onOutput(buffer.copyOf(count))
                     count == 0 -> {
                         // 非阻塞 fd 暂无数据：查一次进程状态再短暂休眠。
                         val status = pty.poll()
@@ -84,9 +84,8 @@ class TerminalSession(
     }
 
     override fun close() {
-        if (running.getAndSet(false)) {
-            pty.close()
-            reader.interrupt()
-        }
+        running.set(false)
+        pty.close()
+        reader.interrupt()
     }
 }

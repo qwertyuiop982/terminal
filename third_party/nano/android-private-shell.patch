@@ -1,0 +1,5 @@
+--- a/src/files.c
++++ b/src/files.c
+@@ -1003 +1003 @@
+-			theshell = (char *)"/bin/sh";
++			theshell = (char *)"/data/data/com.terminal/files/usr/bin/sh";

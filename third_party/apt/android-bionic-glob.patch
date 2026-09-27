@@ -1,0 +1,17 @@
+--- a/apt-pkg/CMakeLists.txt
++++ b/apt-pkg/CMakeLists.txt
+@@ -69,8 +69,14 @@
+                              ${ICONV_LIBRARIES}
+                              $<$<BOOL:${GCRYPT_FOUND}>:${GCRYPT_LIBRARIES}>
+                              $<$<BOOL:${XXHASH_FOUND}>:${XXHASH_LIBRARIES}>
+ )
++
++if (ANDROID_GNULIB_GLOB)
++  set_source_files_properties(contrib/fileutl.cc PROPERTIES COMPILE_FLAGS "-I${ANDROID_GNULIB_INCLUDE_DIR} -D_GL_CONFIG_H_INCLUDED=1 -Drestrict=__restrict__")
++  target_link_libraries(apt-pkg PRIVATE ${ANDROID_GNULIB_GLOB})
++endif()
++
+ set_target_properties(apt-pkg PROPERTIES VERSION ${MAJOR}.${MINOR})
+ set_target_properties(apt-pkg PROPERTIES SOVERSION ${MAJOR})
+ set_target_properties(apt-pkg PROPERTIES CXX_VISIBILITY_PRESET hidden)
+ add_version_script(apt-pkg)

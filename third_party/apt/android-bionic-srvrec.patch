@@ -1,0 +1,51 @@
+--- a/apt-pkg/contrib/srvrec.cc
++++ b/apt-pkg/contrib/srvrec.cc
+@@ -32,6 +32,14 @@
+            std::tie(other.target, other.priority, other.weight, other.port));
+ }
+ 
++static int SkipDnsName(u_char const *begin, u_char const *end)
++{
++   u_char const *cursor = begin;
++   if (ns_name_skip(&cursor, end) != 0)
++      return -1;
++   return static_cast<int>(cursor - begin);
++}
++
+ bool GetSrvRecords(std::string host, int port, std::vector<SrvRec> &Result)
+ {
+    // try SRV only for hostnames, not for IP addresses
+@@ -44,13 +52,8 @@
+    }
+ 
+    std::string target;
+-   int res;
+-   struct servent s_ent_buf;
+-   struct servent *s_ent = nullptr;
+-   std::vector<char> buf(1024);
+-
+-   res = getservbyport_r(htons(port), "tcp", &s_ent_buf, buf.data(), buf.size(), &s_ent);
+-   if (res != 0 || s_ent == nullptr)
++   struct servent *s_ent = getservbyport(htons(port), "tcp");
++   if (s_ent == nullptr)
+       return false;
+ 
+    strprintf(target, "_%s._tcp.%s", s_ent->s_name, host.c_str());
+@@ -92,7 +95,7 @@
+       return _error->Warning("res_query returned no answers (%i) ", answer_count);
+ 
+    // skip the header
+-   compressed_name_len = dn_skipname(answer+sizeof(HEADER), answer+answer_len);
++   compressed_name_len = SkipDnsName(answer+sizeof(HEADER), answer+answer_len);
+    if(compressed_name_len < 0)
+       return _error->Warning("dn_skipname failed %i", compressed_name_len);
+ 
+@@ -103,7 +106,7 @@
+       u_int16_t type, klass, priority, weight, port, dlen;
+       char buf[MAXDNAME];
+ 
+-      compressed_name_len = dn_skipname(pt, answer+answer_len);
++      compressed_name_len = SkipDnsName(pt, answer+answer_len);
+       if (compressed_name_len < 0)
+          return _error->Warning("dn_skipname failed (2): %i",
+                                 compressed_name_len);
