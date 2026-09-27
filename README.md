@@ -61,4 +61,4 @@ sh tests/bootstrap.sh
 sh tests/nginx-smoke.sh /absolute/path/to/nginx [port]
 ```
 
-`run.sh` 覆盖 Debian/Termux 入口、参数校验、目录权限、签名发布、原子快照、重载回滚和错误包；`bootstrap.sh` 使用本地 HTTPS 模拟下载器验证固定哈希、真实 nano/tcc 包的自动导入和签名；`nginx-smoke.sh` 需外部提供的 nginx，执行真实 `nginx -t`、HTTP/HEAD/POST/路径穿越检查及隔离的 `apt update`/`apt download`。这些本地测试不代表另一台目标主机或 Android App UID 验收。
+`run.sh` 覆盖 Debian/Termux 入口、参数校验、目录权限、签名发布、原子快照、重载回滚和错误包；`bootstrap.sh` 用本地 HTTPS 模拟下载器验证固定哈希、真实 nano/tcc 包导入和签名，并用宿主隔离 apt 的专用 `signed-by` 从文件源更新及下载两包；`nginx-smoke.sh` 需外部提供的 nginx，执行真实 `nginx -t`、HTTP/HEAD/POST/路径穿越检查及隔离的 `apt update`/`apt download`。这些本地测试不代表另一台目标主机或 Android App UID 验收。

@@ -50,6 +50,28 @@ for name in nano tcc; do
     grep -q "^Package: $name\$" "$REPO_CLIENT_HOME/repository/dists/stable/main/binary-arm64/Packages"
 done
 sh "$ROOT/debian/install.sh" 127.0.0.1 18923
+if command -v apt-get >/dev/null 2>&1; then
+    mkdir -p "$TEST_ROOT/apt/lists/partial" "$TEST_ROOT/apt/archives/partial" "$TEST_ROOT/download"
+    touch "$TEST_ROOT/apt/status"
+    gpg --batch --export "$REPO_SIGNING_KEY" > "$TEST_ROOT/keyring.gpg"
+    printf 'deb [arch=arm64 signed-by=%s] file://%s/repository stable main\n' \
+        "$TEST_ROOT/keyring.gpg" "$REPO_CLIENT_HOME" > "$TEST_ROOT/sources.list"
+    apt-get -o Dir::Etc::sourcelist="$TEST_ROOT/sources.list" \
+        -o Dir::Etc::sourceparts=- -o Dir::State::lists="$TEST_ROOT/apt/lists" \
+        -o Dir::State::status="$TEST_ROOT/apt/status" \
+        -o Dir::Cache::archives="$TEST_ROOT/apt/archives" \
+        -o APT::Architecture=arm64 -o APT::Sandbox::User=root update
+    (
+        cd "$TEST_ROOT/download"
+        apt-get -o Dir::Etc::sourcelist="$TEST_ROOT/sources.list" \
+            -o Dir::Etc::sourceparts=- -o Dir::State::lists="$TEST_ROOT/apt/lists" \
+            -o Dir::State::status="$TEST_ROOT/apt/status" \
+            -o Dir::Cache::archives="$TEST_ROOT/apt/archives" \
+            -o APT::Architecture=arm64 -o APT::Sandbox::User=root download nano tcc
+    )
+    cmp "$ROOT/packages/nano_9.2-1_arm64.deb" "$TEST_ROOT/download/nano_9.2-1_arm64.deb"
+    cmp "$ROOT/packages/tcc_20260922-1_arm64.deb" "$TEST_ROOT/download/tcc_20260922-1_arm64.deb"
+fi
 REPO_CLIENT_HOME=$TEST_ROOT/tampered
 TEST_CORRUPT=nano_9.2-1_arm64.deb
 export REPO_CLIENT_HOME TEST_CORRUPT

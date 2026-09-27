@@ -78,7 +78,7 @@ nginx 只匹配：
 已通过：
 
 - `sh tests/run.sh`：Debian/Termux 参数校验、幂等安装、权限、签名索引、重复发布、旧 by-hash、错误架构/前缀、nginx 配置检查、启动/停止/重载和失败回滚。
-- `sh tests/bootstrap.sh`：本地模拟 HTTPS 下载器，真实 NDK arm64 nano/tcc `.deb` 固定哈希核验、重复安装、签名发布与篡改拒绝通过。
+- `sh tests/bootstrap.sh`：本地模拟 HTTPS 下载器，真实 NDK arm64 nano/tcc `.deb` 固定哈希核验、重复安装、签名发布与篡改拒绝；宿主隔离 apt 使用专用 `signed-by` 对真实两包完成 `update`/`download`（文件源，无 Android 安装）。
 - `sh tests/nginx-smoke.sh <nginx>`：真实 nginx `nginx -t`、HEAD、POST 拒绝、路径穿越拒绝、签名 `apt update` 和隔离 `apt download`。
 - 此前记录的 nginx/宿主 apt 集成测试仅在本机构造目录通过；本轮没有目标仓库主机、实际 Termux 主机、公钥分发或 App UID 验收结果，不能据此宣称生产仓库已上线。
 
