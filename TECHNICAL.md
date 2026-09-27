@@ -1,6 +1,6 @@
 # 独立 APT 仓库服务：技术说明
 
-更新：2026-09-26。该项目已从 HTTPS 上游反向代理原型改为独立的静态 APT 仓库服务。部署目标是另一台 Debian 或 Termux 主机；Android `terminal` App 不包含 nginx，也不依赖本目录的运行状态。
+更新：2026-09-27。该项目已从 HTTPS 上游反向代理原型改为独立的静态 APT 仓库服务，`main-repo` 已推送（之前验证的提交为 `a12fed7`）。部署目标是另一台 Debian 或 Termux 主机；Android `terminal` App 不包含 nginx，也不依赖本目录的运行状态。当前尚未部署到实际目标主机，缺少的验收项和注意事项见 [TASKS.md](TASKS.md)。
 
 ## 架构
 

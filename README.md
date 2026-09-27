@@ -1,6 +1,6 @@
 # 独立 APT 仓库服务
 
-本目录部署在另一台 Debian 或 Termux 主机上，为 Android bionic 兼容的 `.deb` 包提供经过签名的静态 APT 仓库。它与 [Android 终端项目](https://gh.xmly.dev/https://raw.githubusercontent.com/qwertyuiop982/terminal/main/README.md) 分离；不在 App 内运行 nginx，也不代理第三方仓库。`main-repo` 分支保存可选的 nano、tcc 原生安装包；它们不进入 APK。
+本目录部署在另一台 Debian 或 Termux 主机上，为 Android bionic 兼容的 `.deb` 包提供经过签名的静态 APT 仓库。它与 [Android 终端项目](https://gh.xmly.dev/https://raw.githubusercontent.com/qwertyuiop982/terminal/main/README.md) 分离；不在 App 内运行 nginx，也不代理第三方仓库。`main-repo` 分支保存可选的 nano、tcc 原生安装包；它们不进入 APK。进度、缺少的实际部署参数和注意事项见 [TASKS.md](TASKS.md)；源码/NDK/GitHub 加速地址见 `main` 分支 [构建说明](https://gh.xmly.dev/https://raw.githubusercontent.com/qwertyuiop982/terminal/main/docs/SOURCES_AND_BUILD.md)。
 
 ## 使用
 
