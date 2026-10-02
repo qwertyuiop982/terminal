@@ -95,21 +95,22 @@ rc_bootstrap_packages() (
     [ "$RC_ARCH" = arm64 ] || rc_die 'the pinned Android packages are only available for arm64'
     rc_require_publish_tools
     command -v curl >/dev/null 2>&1 || rc_die 'curl is required for verified HTTPS downloads'
-    rc_manifest=$SCRIPT_DIR/../packages/SHA256SUMS
-    [ -s "$rc_manifest" ] || rc_die "pinned package hashes are missing: $rc_manifest"
-    rc_base=${REPO_PACKAGES_URL:-https://gh.xmly.dev/https://raw.githubusercontent.com/qwertyuiop982/terminal/main-repo/packages}
+    rc_manifest=$SCRIPT_DIR/../packages/SHA256SUMS.release
+    [ -s "$rc_manifest" ] || rc_die "release package hashes are missing: $rc_manifest"
+    rc_base=${REPO_PACKAGES_URL:-https://gh.xmly.dev/https://github.com/qwertyuiop982/terminal/releases/download/android-packages-20261002}
+    rc_base=${rc_base%/}
     case "$rc_base" in https://*/*) ;; *) rc_die 'package URL must use HTTPS' ;; esac
     rc_download=$(mktemp -d "$RC_HOME/run/bootstrap.XXXXXXXX")
     trap 'rm -rf "$rc_download"' EXIT
     trap 'exit 1' HUP INT TERM
-    for rc_filename in nano_9.2-1_arm64.deb tcc_20260922-1_arm64.deb; do
-        curl --fail --silent --show-error --location --retry 2 --max-time 120 \
+    for rc_filename in nano_9.2-1_arm64.deb tcc_20260922-2_arm64.deb openjdk-17_17.0.20-android2_arm64.deb; do
+        curl --fail --silent --show-error --location --retry 2 --max-time 300 \
             --proto '=https' --proto-redir '=https' \
             --output "$rc_download/$rc_filename" "$rc_base/$rc_filename" ||
             rc_die "could not download $rc_filename"
     done
     (cd "$rc_download" && sha256sum -c "$rc_manifest") || rc_die 'downloaded package checksum mismatch'
-    for rc_filename in nano_9.2-1_arm64.deb tcc_20260922-1_arm64.deb; do
+    for rc_filename in nano_9.2-1_arm64.deb tcc_20260922-2_arm64.deb openjdk-17_17.0.20-android2_arm64.deb; do
         rc_import_package "$rc_download/$rc_filename"
     done
     if [ -n "${REPO_SIGNING_KEY:-}" ]; then

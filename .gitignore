@@ -1,0 +1,2 @@
+# Large binary packages are published as GitHub Release assets, not Git objects.
+packages/*.deb

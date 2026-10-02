@@ -1,11 +1,11 @@
 # 独立 APT 仓库服务：技术说明
 
-更新：2026-09-27。该项目已从 HTTPS 上游反向代理原型改为独立的静态 APT 仓库服务，`main-repo` 已推送（之前验证的提交为 `a12fed7`）。部署目标是另一台 Debian 或 Termux 主机；Android `terminal` App 不包含 nginx，也不依赖本目录的运行状态。当前尚未部署到实际目标主机，缺少的验收项和注意事项见 [TASKS.md](TASKS.md)。
+更新：2026-10-02。该项目已从 HTTPS 上游反向代理原型改为独立的静态 APT 仓库服务，`main-repo` 已推送（之前验证的提交为 `a12fed7`）。部署目标是另一台 Debian 或 Termux 主机；Android `terminal` App 不包含 nginx，也不依赖本目录的运行状态。当前尚未部署到实际目标主机，缺少的验收项和注意事项见 [TASKS.md](TASKS.md)。
 
 ## 架构
 
 ```text
-GitHub main-repo/packages/*.deb + 本分支固定 SHA256 + 仓库签名私钥
+GitHub Release assets/*.deb + 本分支固定 SHA256 + 仓库签名私钥
                     |
                     v
   repository/pool/main/*.deb
@@ -18,13 +18,13 @@ GitHub main-repo/packages/*.deb + 本分支固定 SHA256 + 仓库签名私钥
   客户端 apt: signed-by 公钥 -> InRelease/Release -> Packages -> .deb
 ```
 
-安装脚本创建状态目录，从 `gh.xmly.dev` 转发的 GitHub 原始文件下载已由 NDK 构建的 nano/tcc 包，逐个按本地固定 SHA256 核验，再导入仓库池；有签名密钥时立即生成签名快照，无密钥时只暂存包。发布脚本生成索引和签名快照；启动脚本只生成静态 nginx 配置。nginx 不编译包、不代理上游、不访问项目源码或私钥。构建主机使用原始源码与 NDK 产出 `packages/` 下的 `.deb`；目标仓库主机不交叉编译。
+安装脚本创建状态目录，从 `gh.xmly.dev` 转发的固定 GitHub Release 下载已由 NDK 构建的 nano/tcc/OpenJDK 17 包，逐个按本地固定 SHA256 核验，再导入仓库池；有签名密钥时立即生成签名快照，无密钥时只暂存包。发布脚本生成索引和签名快照；启动脚本只生成静态 nginx 配置。nginx 不编译包、不代理上游、不访问项目源码或私钥。构建主机使用原始源码与 NDK 产出 `packages/` 下的 `.deb`；目标仓库主机不交叉编译。
 
 ## 脚本契约
 
 | 脚本 | 契约 |
 | --- | --- |
-| `debian/install.sh <ip> <port>` | 校验 IPv4/端口，缺 nginx 时在目标 Debian 上调用 `apt-get install nginx`；创建目录，默认 HTTPS 下载并核验 nano/tcc，设了签名密钥才自动发布 |
+| `debian/install.sh <ip> <port>` | 校验 IPv4/端口，缺 nginx 时在目标 Debian 上调用 `apt-get install nginx`；创建目录，默认 HTTPS 下载并核验 nano/tcc/OpenJDK 17，设了签名密钥才自动发布 |
 | `termux/install.sh <ip> <port>` | 同上；缺 nginx 时在目标 Termux 上调用 `apt install nginx` |
 | `build-packages.sh` | 构建主机从终端项目 NDK staged tree 产生相对私有根的 nano/tcc `.deb`；检查 ELF 与源树，输出固定 SHA256 |
 | `debian/publish.sh <deb...>` | 按 `REPO_ARCH` 检查包，生成 `Packages`、压缩索引、by-hash、`Release`、`InRelease`、`Release.gpg`，原子切换快照 |
@@ -39,7 +39,7 @@ GitHub main-repo/packages/*.deb + 本分支固定 SHA256 + 仓库签名私钥
 - `REPO_SUITE`：套件，默认 `stable`；只接受小写字母、数字和连字符。
 - `REPO_ARCH`：APT 架构，默认 `arm64`；包必须是该架构或 `all`；自动下载仅支持 arm64。
 - `REPO_BOOTSTRAP=no`：禁用安装时自动下载，供离线测试或手工发布；默认自动下载。
-- `REPO_PACKAGES_URL`：可替换自动下载的 HTTPS 基址，不改变本地 `packages/SHA256SUMS` 的预期哈希。
+- `REPO_PACKAGES_URL`：可替换自动下载的 HTTPS 基址，不改变本地 `packages/SHA256SUMS.release` 的预期哈希。
 - `REPO_NGINX`：可执行 nginx 路径；显式设置但不可执行时不会自动安装替代品。
 - `REPO_SIGNING_KEY`：发布使用的完整十六进制 secret-key fingerprint，长度为 40 或 64。
 - `GNUPGHOME`：可选的签名密钥目录，不能位于公开仓库下。

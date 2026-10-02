@@ -37,7 +37,14 @@ make_package() {
         printf 'immutable package differs: %s (choose a new version)\n' "$deb" >&2
         exit 1
     fi
-    if [ ! -e "$deb" ]; then mv "$WORK/${name}_${version}_arm64.deb" "$deb"; fi
+    if [ ! -e "$deb" ]; then
+        # Leave published, immutable packages untouched. Every new package version
+        # must first pass the Android private-path audit on the NDK output.
+        auditor=$ROOT/../terminal/tools/check-package-paths.sh
+        [ -f "$auditor" ] || { printf 'private-path auditor missing: %s\n' "$auditor" >&2; exit 1; }
+        sh "$auditor" "$package"
+        mv "$WORK/${name}_${version}_arm64.deb" "$deb"
+    fi
     dpkg-deb -f "$deb" Package Version Architecture
 }
 
