@@ -15,7 +15,7 @@ cd terminal-packages
 
 ## Import and publish packages
 
-The installer downloads Nano 9.2-1, TinyCC 20260922-2, and OpenJDK 17.0.20-android4 from the fixed `android-packages-20261002-r1` GitHub Release through `https://gh.xmly.dev/`. It verifies all three downloads against the local `packages/SHA256SUMS.release` before importing any of them.
+The installer downloads Nano 9.2-1, TinyCC 20260922-2, and OpenJDK 17.0.20-android4 from the fixed `android-packages-20261002-r1` GitHub Release through `https://gh.xmly.dev/`. If that default mirror fails (for example with HTTP 429), it continues from the original GitHub HTTPS asset URL. It verifies all three downloads against the local `packages/SHA256SUMS.release` before importing any of them. An explicitly supplied `REPO_PACKAGES_URL` is never silently replaced.
 
 Choose a real address and port for your host. Set `REPO_SIGNING_KEY` to the complete fingerprint of your repository signing key, held in a private GnuPG directory on that host:
 

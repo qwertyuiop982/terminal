@@ -99,15 +99,26 @@ rc_bootstrap_packages() (
     [ -s "$rc_manifest" ] || rc_die "release package hashes are missing: $rc_manifest"
     rc_base=${REPO_PACKAGES_URL:-https://gh.xmly.dev/https://github.com/qwertyuiop982/terminal/releases/download/android-packages-20261002-r1}
     rc_base=${rc_base%/}
-    case "$rc_base" in https://*/*) ;; *) rc_die 'package URL must use HTTPS' ;; esac
+    rc_fallback=
+    if [ -z "${REPO_PACKAGES_URL:-}" ]; then
+        rc_fallback=https://github.com/qwertyuiop982/terminal/releases/download/android-packages-20261002-r1
+    fi
+    case "$rc_base" in https://*/*) ;; *) rc_die "package URL must use HTTPS" ;; esac
     rc_download=$(mktemp -d "$RC_HOME/run/bootstrap.XXXXXXXX")
     trap 'rm -rf "$rc_download"' EXIT
     trap 'exit 1' HUP INT TERM
     for rc_filename in nano_9.2-1_arm64.deb tcc_20260922-2_arm64.deb openjdk-17_17.0.20-android4_arm64.deb; do
-        curl --fail --silent --show-error --location --retry 2 --max-time 300 \
+        if ! curl --fail --silent --show-error --location --retry 2 --max-time 300 \
             --proto '=https' --proto-redir '=https' \
-            --output "$rc_download/$rc_filename" "$rc_base/$rc_filename" ||
-            rc_die "could not download $rc_filename"
+            --output "$rc_download/$rc_filename" "$rc_base/$rc_filename"; then
+            [ -n "$rc_fallback" ] || rc_die "could not download $rc_filename"
+            rc_base=$rc_fallback
+            rc_fallback=
+            curl --fail --silent --show-error --location --retry 4 --retry-all-errors --retry-delay 2 --connect-timeout 15 --max-time 300 \
+                --proto '=https' --proto-redir '=https' \
+                --output "$rc_download/$rc_filename" "$rc_base/$rc_filename" ||
+                rc_die "could not download $rc_filename"
+        fi
     done
     (cd "$rc_download" && sha256sum -c "$rc_manifest") || rc_die 'downloaded package checksum mismatch'
     for rc_filename in nano_9.2-1_arm64.deb tcc_20260922-2_arm64.deb openjdk-17_17.0.20-android4_arm64.deb; do

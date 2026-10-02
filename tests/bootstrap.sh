@@ -21,8 +21,11 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 [ -n "$output" ] && [ -n "$url" ] || exit 1
+printf '%s\n' "$url" >> "$TEST_URL_LOG"
 case "$url" in
-    "$TEST_EXPECTED_BASE"/*) ;;
+    "$TEST_EXPECTED_BASE"/*)
+        [ "${TEST_FAIL_PRIMARY:-}" != "${url##*/}" ] || exit 22 ;;
+    "$TEST_FALLBACK_BASE"/*) ;;
     *) exit 1 ;;
 esac
 if [ "${TEST_CORRUPT:-}" = "${url##*/}" ]; then
@@ -38,7 +41,9 @@ REPO_NGINX=/bin/true
 REPO_BOOTSTRAP=yes
 unset REPO_PACKAGES_URL
 TEST_EXPECTED_BASE=https://gh.xmly.dev/https://github.com/qwertyuiop982/terminal/releases/download/android-packages-20261002-r1
-export PATH GNUPGHOME REPO_NGINX REPO_BOOTSTRAP TEST_EXPECTED_BASE TEST_PACKAGES
+TEST_FALLBACK_BASE=https://github.com/qwertyuiop982/terminal/releases/download/android-packages-20261002-r1
+TEST_URL_LOG=$TEST_ROOT/requests.log
+export PATH GNUPGHOME REPO_NGINX REPO_BOOTSTRAP TEST_EXPECTED_BASE TEST_FALLBACK_BASE TEST_URL_LOG TEST_PACKAGES
 gpg --batch --passphrase '' --quick-generate-key 'Bootstrap Test <test@example.invalid>' ed25519 sign 0 >/dev/null 2>&1
 REPO_SIGNING_KEY=$(gpg --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
 export REPO_SIGNING_KEY
@@ -50,9 +55,28 @@ gpg --batch --verify "$REPO_CLIENT_HOME/repository/dists/stable/InRelease" >/dev
 for name in nano tcc openjdk-17; do
     grep -q "^Package: $name\$" "$REPO_CLIENT_HOME/repository/dists/stable/main/binary-arm64/Packages"
 done
+REPO_CLIENT_HOME=$TEST_ROOT/fallback
+TEST_FAIL_PRIMARY=nano_9.2-1_arm64.deb
+export REPO_CLIENT_HOME TEST_FAIL_PRIMARY
+sh "$ROOT/debian/install.sh" 127.0.0.1 18923
+(cd "$REPO_CLIENT_HOME/repository/pool/main" && sha256sum -c "$ROOT/packages/SHA256SUMS.release")
+for name in nano_9.2-1_arm64.deb tcc_20260922-2_arm64.deb openjdk-17_17.0.20-android4_arm64.deb; do
+    grep -Fqx "$TEST_FALLBACK_BASE/$name" "$TEST_URL_LOG" || exit 1
+done
+unset TEST_FAIL_PRIMARY
+REPO_CLIENT_HOME=$TEST_ROOT/repository
 REPO_PACKAGES_URL=https://mirror.example.invalid/pinned-assets/
 TEST_EXPECTED_BASE=${REPO_PACKAGES_URL%/}
-export REPO_PACKAGES_URL TEST_EXPECTED_BASE
+TEST_FAIL_PRIMARY=nano_9.2-1_arm64.deb
+REPO_CLIENT_HOME=$TEST_ROOT/explicit-unavailable
+export REPO_PACKAGES_URL TEST_EXPECTED_BASE TEST_FAIL_PRIMARY REPO_CLIENT_HOME
+if sh "$ROOT/debian/install.sh" 127.0.0.1 18923 >/dev/null 2>&1; then
+    echo 'installer ignored a failed explicit package URL' >&2
+    exit 1
+fi
+[ ! -e "$REPO_CLIENT_HOME/repository/pool/main/nano_9.2-1_arm64.deb" ] || exit 1
+unset TEST_FAIL_PRIMARY
+REPO_CLIENT_HOME=$TEST_ROOT/repository
 sh "$ROOT/debian/install.sh" 127.0.0.1 18923
 if command -v apt-get >/dev/null 2>&1; then
     mkdir -p "$TEST_ROOT/apt/lists/partial" "$TEST_ROOT/apt/archives/partial" "$TEST_ROOT/download"
