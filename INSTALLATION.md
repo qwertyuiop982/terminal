@@ -15,7 +15,7 @@ cd terminal-packages
 
 ## Import and publish packages
 
-The installer downloads Nano 9.2-1, TinyCC 20260922-2, and OpenJDK 17.0.20-android2 from the fixed `android-packages-20261002` GitHub Release through `https://gh.xmly.dev/`. It verifies all three downloads against the local `packages/SHA256SUMS.release` before importing any of them.
+The installer downloads Nano 9.2-1, TinyCC 20260922-2, and OpenJDK 17.0.20-android4 from the fixed `android-packages-20261002-r1` GitHub Release through `https://gh.xmly.dev/`. It verifies all three downloads against the local `packages/SHA256SUMS.release` before importing any of them.
 
 Choose a real address and port for your host. Set `REPO_SIGNING_KEY` to the complete fingerprint of your repository signing key, held in a private GnuPG directory on that host:
 
@@ -35,7 +35,7 @@ Keep the private signing key outside the public repository. Export only its publ
 You can use `gh-proxy.org` as an alternative download mirror with the same pinned package checks:
 
 ```sh
-REPO_PACKAGES_URL=https://gh-proxy.org/https://github.com/qwertyuiop982/terminal/releases/download/android-packages-20261002 \
+REPO_PACKAGES_URL=https://gh-proxy.org/https://github.com/qwertyuiop982/terminal/releases/download/android-packages-20261002-r1 \
   sh debian/install.sh <IPv4> <port>
 ```
 

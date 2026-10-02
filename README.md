@@ -16,12 +16,12 @@ These packages are built for Terminal on ARM64 Android. The package server runs 
 
 ## Get the packages
 
-Download the `.deb` files and checksum list from [Android Packages](https://github.com/qwertyuiop982/terminal/releases/tag/android-packages-20261002).
+Download the `.deb` files and checksum list from [Android Packages](https://github.com/qwertyuiop982/terminal/releases/tag/android-packages-20261002-r1).
 
 The installer automatically downloads that fixed Release through:
 
 ```text
-https://gh.xmly.dev/https://github.com/qwertyuiop982/terminal/releases/download/android-packages-20261002/<asset-name>
+https://gh.xmly.dev/https://github.com/qwertyuiop982/terminal/releases/download/android-packages-20261002-r1/<asset-name>
 ```
 
 Every package is checked against the checksum list shipped with this branch before it is imported.

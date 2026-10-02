@@ -37,7 +37,7 @@ GNUPGHOME=$TEST_ROOT/keys
 REPO_NGINX=/bin/true
 REPO_BOOTSTRAP=yes
 unset REPO_PACKAGES_URL
-TEST_EXPECTED_BASE=https://gh.xmly.dev/https://github.com/qwertyuiop982/terminal/releases/download/android-packages-20261002
+TEST_EXPECTED_BASE=https://gh.xmly.dev/https://github.com/qwertyuiop982/terminal/releases/download/android-packages-20261002-r1
 export PATH GNUPGHOME REPO_NGINX REPO_BOOTSTRAP TEST_EXPECTED_BASE TEST_PACKAGES
 gpg --batch --passphrase '' --quick-generate-key 'Bootstrap Test <test@example.invalid>' ed25519 sign 0 >/dev/null 2>&1
 REPO_SIGNING_KEY=$(gpg --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
@@ -78,7 +78,7 @@ if command -v apt-get >/dev/null 2>&1; then
     (cd "$TEST_ROOT/download" && sha256sum -c "$ROOT/packages/SHA256SUMS.release")
 fi
 REPO_CLIENT_HOME=$TEST_ROOT/tampered
-TEST_CORRUPT=openjdk-17_17.0.20-android2_arm64.deb
+TEST_CORRUPT=openjdk-17_17.0.20-android4_arm64.deb
 export REPO_CLIENT_HOME TEST_CORRUPT
 if sh "$ROOT/debian/install.sh" 127.0.0.1 18923 >/dev/null 2>&1; then
     echo 'bootstrap accepted a corrupted package' >&2
@@ -89,7 +89,7 @@ fi
     exit 1
 }
 unset TEST_CORRUPT REPO_PACKAGES_URL
-TEST_EXPECTED_BASE=https://gh.xmly.dev/https://github.com/qwertyuiop982/terminal/releases/download/android-packages-20261002
+TEST_EXPECTED_BASE=https://gh.xmly.dev/https://github.com/qwertyuiop982/terminal/releases/download/android-packages-20261002-r1
 PREFIX=$TEST_ROOT/termux/usr
 REPO_CLIENT_HOME=$TEST_ROOT/termux/client
 export TEST_EXPECTED_BASE PREFIX REPO_CLIENT_HOME

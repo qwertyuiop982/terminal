@@ -1,4 +1,4 @@
-# Release asset hashes for android-packages-20261002.
+# Release asset hashes for android-packages-20261002-r1.
 19ba079768284e49bde1add095420b95c558ff13d7594b97001a665d1f2479d7  nano_9.2-1_arm64.deb
 0be112b7b68a3a4d0f162162d205a600c3a33fb632ebf612da0b02af1511d5cb  tcc_20260922-2_arm64.deb
-989f4510ad3b442ade1fcb355d4e2ecd01aeb332e802a9642625e549c7c8e0ea  openjdk-17_17.0.20-android2_arm64.deb
+d4dd848d5b6c0b9bc686d8f65c3e89f57f2001ec5d0ef02110769be691a1a674  openjdk-17_17.0.20-android4_arm64.deb
