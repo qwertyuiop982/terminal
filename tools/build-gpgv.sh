@@ -41,7 +41,7 @@ build_library() {
             LDFLAGS="-L$DEP/lib -Wl,-z,max-page-size=16384" \
             "$SOURCE/$source/configure" --host=aarch64-linux-android \
                 --prefix="$DEP" --disable-shared --enable-static --disable-doc "$@"
-        make -j3
+        make -j"${ANDROID_BUILD_JOBS:-2}"
         make install
     )
     [ -s "$DEP/lib/$library" ] || { printf 'missing %s after building %s\n' "$library" "$source" >&2; exit 1; }
@@ -68,10 +68,10 @@ mkdir -p "$BUILD"
                 --with-libassuan-prefix="$DEP" --with-libksba-prefix="$DEP" \
                 --with-npth-prefix="$DEP"
     fi
-    make -j3 -C common libcommonpth.a libgpgrl.a
-    make -j3 -C regexp libregexp.a
-    make -j3 -C kbx libkeybox.a
-    make -j3 -C g10 gpgv
+    make -j"${ANDROID_BUILD_JOBS:-2}" -C common libcommonpth.a libgpgrl.a
+    make -j"${ANDROID_BUILD_JOBS:-2}" -C regexp libregexp.a
+    make -j"${ANDROID_BUILD_JOBS:-2}" -C kbx libkeybox.a
+    make -j"${ANDROID_BUILD_JOBS:-2}" -C g10 gpgv
 )
 [ -s "$BUILD/g10/gpgv" ] || { echo 'gpgv build did not produce a verifier' >&2; exit 1; }
 cp -f "$BUILD/g10/gpgv" "$FINAL/bin/gpgv"

@@ -1,0 +1,14 @@
+--- a/apt-pkg/deb/debrecords.cc
++++ b/apt-pkg/deb/debrecords.cc
+@@ -153,9 +153,11 @@
+ 
++#if !(defined(__ANDROID__) && __ANDROID_API__ < 26)
+    char const * const codeset = nl_langinfo(CODESET);
+    if (strcmp(codeset,"UTF-8") != 0) {
+       string dest;
+       UTF8ToCodeset(codeset, orig, &dest);
+       return dest;
+    }
++#endif
+ 
+    return orig;

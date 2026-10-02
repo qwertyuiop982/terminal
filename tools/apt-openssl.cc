@@ -1,5 +1,6 @@
 // OpenSSL transport for upstream APT's HTTP method on Android bionic.
 // Certificate and hostname verification are mandatory for every TLS connection.
+#include <config.h>
 #include <apt-pkg/configuration.h>
 #include <apt-pkg/error.h>
 #include <apt-pkg/fileutl.h>

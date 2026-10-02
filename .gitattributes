@@ -1,0 +1,5 @@
+# Unified diffs preserve upstream context, including spaces and tabs.
+*.patch -whitespace
+*.diff -whitespace
+# Retain the original license notice bytes.
+app/src/main/assets/licenses/* whitespace=-blank-at-eof

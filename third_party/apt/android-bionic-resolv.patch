@@ -1,0 +1,12 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -197,7 +197,8 @@
+ 
+ # Handle resolving
+ check_function_exists(res_ninit HAVE_LIBC_RESOLV)
+-if(HAVE_LIBC_RESOLV)
++# Android bionic provides res_query in libc but not res_ninit.
++if(HAVE_LIBC_RESOLV OR ANDROID)
+     set(RESOLV_LIBRARIES)
+ else()
+     set(RESOLV_LIBRARIES -lresolv)

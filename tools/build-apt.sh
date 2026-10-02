@@ -42,6 +42,13 @@ printf '#include <pthread.h>\n_Static_assert(sizeof(pthread_mutex_t) == 40, "bio
     "$CC" -x c -c -o "$OUT/apt-build/bionic-lock.o" -
 cp "$ROOT/third_party/apt/android-gpgrt-lock-aarch64.h" \
     "$SRC/apt-deps/libgpg-error-1.51/src/syscfg/lock-obj-pub.aarch64-unknown-linux-android.h"
+if grep -Fq '#define FIPS_FORCE_FILE "/etc/gcrypt/fips_enabled"' \
+    "$SRC/apt-deps/libgcrypt-1.11.0/src/fips.c" &&
+    ! grep -Fq '/data/data/com.terminal/files/usr/etc/gcrypt/fips_enabled' \
+        "$SRC/apt-deps/libgcrypt-1.11.0/src/fips.c"; then
+    patch --batch --fuzz=0 -p1 -d "$SRC/apt-deps/libgcrypt-1.11.0" < \
+        "$ROOT/third_party/apt/android-private-gcrypt.patch"
+fi
 
 if [ ! -s "$DEP/lib/libgpg-error.a" ]; then
     mkdir -p "$OUT/gpg-error-build"
@@ -52,7 +59,10 @@ if [ ! -s "$DEP/lib/libgpg-error.a" ]; then
             --prefix="$DEP" --disable-nls --disable-shared --enable-static &&
         make -j4 && make install)
 fi
-if [ ! -s "$DEP/lib/libgcrypt.a" ]; then
+if [ ! -s "$DEP/lib/libgcrypt.a" ] ||
+    strings "$DEP/lib/libgcrypt.a" | grep -Fxq '/etc/gcrypt/fips_enabled' ||
+    strings "$DEP/lib/libgcrypt.a" | grep -Fxq '/etc/gcrypt/random.conf' ||
+    strings "$DEP/lib/libgcrypt.a" | grep -Fxq '/etc/gcrypt/hwf.deny'; then
     mkdir -p "$OUT/gcrypt-build"
     (cd "$OUT/gcrypt-build" &&
         CC="$CC" AR="$BIN/llvm-ar" RANLIB="$BIN/llvm-ranlib" \
@@ -65,13 +75,18 @@ if [ ! -s "$DEP/lib/libgcrypt.a" ]; then
 fi
 if [ ! -s "$DEP/lib/liblz4.a" ]; then
     lz4="$SRC/apt-deps/lz4-1.10.0/lib"
-    for name in lz4 lz4frame lz4hc xxhash; do
+    for name in lz4 lz4frame lz4hc; do
         "$CC" -O2 -fPIC -c "$lz4/$name.c" -I"$lz4" -o "$OUT/apt-build/$name.o"
     done
     mkdir -p "$DEP/lib" "$DEP/include"
     "$BIN/llvm-ar" rcs "$DEP/lib/liblz4.a" "$OUT/apt-build/lz4.o" \
-        "$OUT/apt-build/lz4frame.o" "$OUT/apt-build/lz4hc.o" "$OUT/apt-build/xxhash.o"
+        "$OUT/apt-build/lz4frame.o" "$OUT/apt-build/lz4hc.o"
     cp "$lz4/lz4.h" "$lz4/lz4frame.h" "$lz4/lz4hc.h" "$DEP/include/"
+fi
+# Older local builds also bundled LZ4's xxhash, duplicating the pinned xxHash archive.
+if "$BIN/llvm-ar" t "$DEP/lib/liblz4.a" | grep -Fxq xxhash.o; then
+    "$BIN/llvm-ar" d "$DEP/lib/liblz4.a" xxhash.o
+    "$BIN/llvm-ranlib" "$DEP/lib/liblz4.a"
 fi
 if [ ! -s "$DEP/lib/libxxhash.a" ]; then
     xxhash="$SRC/apt-deps/xxHash-0.8.3"
@@ -137,7 +152,7 @@ cmake -S "$APT" -B "$OUT/apt-build" \
     -DXXHASH_INCLUDE_DIRS="$DEP/include" -DXXHASH_LIBRARIES="$DEP/lib/libxxhash.a" \
     -DGCRYPT_INCLUDE_DIRS="$DEP/include" -DGCRYPT_LIBRARIES="$DEP/lib/libgcrypt.a;$DEP/lib/libgpg-error.a"
 
-cmake --build "$OUT/apt-build" --parallel 4 --target apt apt-get apt-cache apt-config vendor-apt-key http gpgv file copy store
+cmake --build "$OUT/apt-build" --parallel "${ANDROID_BUILD_JOBS:-2}" --target apt apt-get apt-cache apt-config vendor-apt-key http gpgv file copy store
 for executable in apt apt-get apt-cache apt-config; do
     cp -f "$OUT/apt-build/cmdline/$executable" "$FINAL/bin/"
 done

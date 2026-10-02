@@ -1,0 +1,15 @@
+--- a/apt-pkg/CMakeLists.txt
++++ b/apt-pkg/CMakeLists.txt
+@@ -53,8 +53,11 @@
+                                    $<$<BOOL:${SYSTEMD_FOUND}>:${SYSTEMD_INCLUDE_DIRS}>
+                                    ${ICONV_INCLUDE_DIRS}
+                                    $<$<BOOL:${GCRYPT_FOUND}>:${GCRYPT_INCLUDE_DIRS}>
+-                                   $<$<BOOL:${XXHASH_FOUND}>:${XXHASH_INCLUDE_DIRS}>
++
+ )
++
++# pkgcachegen.h includes xxhash.h in consumers of apt-pkg.
++target_include_directories(apt-pkg PUBLIC ${XXHASH_INCLUDE_DIRS})
+ 
+ target_link_libraries(apt-pkg
+                       PRIVATE ${CMAKE_DL_LIBS} ${RESOLV_LIBRARIES}

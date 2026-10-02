@@ -1,0 +1,89 @@
+--- a/apt-pkg/aptconfiguration.cc
++++ b/apt-pkg/aptconfiguration.cc
+@@ -35,11 +35,19 @@
+ // setDefaultConfigurationForCompressors				/*{{{*/
+ static void setDefaultConfigurationForCompressors() {
+ 	// Set default application paths to check for optional compression types
++#ifdef __ANDROID__
++	_config->CndSet("Dir::Bin::gzip", BIN_DIR "/gzip");
++	_config->CndSet("Dir::Bin::bzip2", BIN_DIR "/bzip2");
++	_config->CndSet("Dir::Bin::xz", BIN_DIR "/xz");
++	_config->CndSet("Dir::Bin::lz4", BIN_DIR "/lz4");
++	_config->CndSet("Dir::Bin::zstd", BIN_DIR "/zstd");
++#else
+ 	_config->CndSet("Dir::Bin::gzip", "/bin/gzip");
+ 	_config->CndSet("Dir::Bin::bzip2", "/bin/bzip2");
+ 	_config->CndSet("Dir::Bin::xz", "/usr/bin/xz");
+ 	_config->CndSet("Dir::Bin::lz4", "/usr/bin/lz4");
+ 	_config->CndSet("Dir::Bin::zstd", "/usr/bin/zstd");
++#endif
+ 	if (FileExists(_config->Find("Dir::Bin::xz")) == true) {
+ 		_config->Set("Dir::Bin::lzma", _config->Find("Dir::Bin::xz"));
+ 		_config->Set("APT::Compressor::lzma::Binary", "xz");
+@@ -52,7 +60,11 @@
+ 			_config->Set("APT::Compressor::lzma::UncompressArg::", "-d");
+ 		}
+ 	} else {
++#ifdef __ANDROID__
++		_config->CndSet("Dir::Bin::lzma", BIN_DIR "/lzma");
++#else
+ 		_config->CndSet("Dir::Bin::lzma", "/usr/bin/lzma");
++#endif
+ 		if (_config->Exists("APT::Compressor::lzma::CompressArg") == false) {
+ 			_config->Set("APT::Compressor::lzma::CompressArg::", "--suffix=");
+ 			_config->Set("APT::Compressor::lzma::CompressArg::", "-6");
+@@ -514,6 +526,10 @@
+ /* */
+ bool Configuration::isChroot()
+ {
++#ifdef __ANDROID__
++   // The app's private prefix is not a chroot and does not ship ischroot.
++   return false;
++#else
+    static struct once
+    {
+       bool res = false;
+@@ -534,8 +550,8 @@
+ 	 res = ExecWait(child, "ischroot", true);
+       }
+    } once;
+-
+    return once.res;
++#endif
+ }
+ 									/*}}}*/
+ // isUsrMerged - whether usr is merged t			     	/*{{{*/
+--- a/apt-pkg/deb/dpkgpm.cc
++++ b/apt-pkg/deb/dpkgpm.cc
+@@ -179,6 +179,10 @@
+    so we use the binary from util-linux */
+ static bool ionice(int PID)
+ {
++#ifdef __ANDROID__
++   (void) PID; // No ionice helper is installed in the app prefix.
++   return false;
++#else
+    if (!FileExists("/usr/bin/ionice"))
+       return false;
+    pid_t Process = ExecFork();
+@@ -194,6 +198,7 @@
+       execv(Args[0], (char **)Args);
+    }
+    return ExecWait(Process, "ionice");
++#endif
+ }
+ 									/*}}}*/
+ // FindNowVersion - Helper to find a Version in "now" state	/*{{{*/
+--- a/apt-pkg/deb/debsystem.cc
++++ b/apt-pkg/deb/debsystem.cc
+@@ -325,8 +325,10 @@
+        Score += 10;
+    if (FileExists(Cnf.Find("Dir::Bin::dpkg",BIN_DIR"/dpkg")) == true)
+       Score += 10;
++#ifndef __ANDROID__
+    if (FileExists("/etc/debian_version") == true)
+       Score += 10;
++#endif
+    return Score;
+ }
+ 									/*}}}*/

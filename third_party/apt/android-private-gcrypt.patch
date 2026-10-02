@@ -1,0 +1,42 @@
+--- a/src/fips.c
++++ b/src/fips.c
+@@ -34,7 +34,11 @@
+ #endif /*HAVE_SYSLOG*/
+ 
+ /* The name of the file used to force libgcrypt into fips mode. */
++#ifdef __ANDROID__
++#define FIPS_FORCE_FILE "/data/data/com.terminal/files/usr/etc/gcrypt/fips_enabled"
++#else
+ #define FIPS_FORCE_FILE "/etc/gcrypt/fips_enabled"
++#endif
+ 
+ #include "g10lib.h"
+ #include "cipher-proto.h"
+--- a/src/hwfeatures.c
++++ b/src/hwfeatures.c
+@@ -33,7 +33,11 @@
+ #include "hwf-common.h"
+ 
+ /* The name of a file used to globally disable selected features. */
++#ifdef __ANDROID__
++#define HWF_DENY_FILE "/data/data/com.terminal/files/usr/etc/gcrypt/hwf.deny"
++#else
+ #define HWF_DENY_FILE "/etc/gcrypt/hwf.deny"
++#endif
+ 
+ /* A table to map hardware features to a string.
+  * Note: Remember to add new HW features to 'doc/gcrypt.texi'.  */
+--- a/random/random.c
++++ b/random/random.c
+@@ -40,7 +40,11 @@
+ #include "cipher.h"         /* For _gcry_sha1_hash_buffer().  */
+ 
+ /* The name of a file used to globally configure the RNG. */
++#ifdef __ANDROID__
++#define RANDOM_CONF_FILE "/data/data/com.terminal/files/usr/etc/gcrypt/random.conf"
++#else
+ #define RANDOM_CONF_FILE "/etc/gcrypt/random.conf"
++#endif
+ 
+ 
+ /* If not NULL a progress function called from certain places and the

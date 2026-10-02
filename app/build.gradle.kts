@@ -152,8 +152,8 @@ android {
         minSdk = 24
         // targetSdk 28 is required for execve() from files/usr on Android 10+.
         targetSdk = 28
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.0.1"
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
@@ -167,6 +167,7 @@ android {
     }
 
     buildFeatures {
+        buildConfig = true
         viewBinding = true
     }
 

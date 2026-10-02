@@ -1,0 +1,16 @@
+--- a/src/histedit.c
++++ b/src/histedit.c
+@@ -342,7 +342,12 @@
+ 	if (editor) {
+ 		int fd;
+ 		INTOFF;		/* easier */
+-		sprintf(editfile, "%s_shXXXXXX", _PATH_TMP);
++		const char *tmpdir = getenv("TMPDIR");
++		if (tmpdir == NULL || tmpdir[0] != '/')
++			sh_error("TMPDIR must name a private directory");
++		int length = snprintf(editfile, sizeof(editfile), "%s/_shXXXXXX", tmpdir);
++		if (length < 0 || length >= (int)sizeof(editfile))
++			sh_error("TMPDIR path is too long");
+ 		if ((fd = mkstemp(editfile)) < 0)
+ 			sh_error("can't create temporary file %s", editfile);
+ 		if ((efp = fdopen(fd, "w")) == NULL) {

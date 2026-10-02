@@ -1,0 +1,15 @@
+--- a/apt-private/private-output.cc
++++ b/apt-private/private-output.cc
+@@ -736,7 +736,12 @@
+    regex_t Pattern;
+    int Res;
+ 
++#if defined(__ANDROID__) && __ANDROID_API__ < 26
++   // No nl_langinfo on API 24; this NLS-disabled build uses English prompts.
++   Res = regcomp(&Pattern, "^[yY]([eE][sS])?$",
++#else
+    Res = regcomp(&Pattern, nl_langinfo(YESEXPR),
++#endif
+                  REG_EXTENDED|REG_ICASE|REG_NOSUB);
+ 
+    if (Res != 0) {

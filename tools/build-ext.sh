@@ -6,9 +6,9 @@
 # host tcc kept for libtcc1.a) and packages/dpkg/build.sh (configure args).
 #
 # Usage:
-#   ./tools/build-ext.sh          # build for both ABIs and stage assets
-#   ./tools/build-ext.sh arm64    # build only arm64-v8a
-#   ./tools/build-ext.sh arm      # build only armeabi-v7a
+#   ./tools/build-ext.sh [arm64]  # arm64 only; 32-bit extensions remain paused
+# TCC is delegated to ../tcc-android and ../tinycc; other existing source archives
+# stay pinned. For TCC-only rebuilding use tools/build-tcc.sh (does not reset DEST).
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
@@ -31,14 +31,11 @@ mkdir -p "$SRC" "$OUT"
 
 
 # ---------- ABI selection ----------
-build_all=false
-case "${1:-all}" in
-  all) build_all=true ;;
-  arm64) ABIS="arm64-v8a" ;;
-  arm)   ABIS="armeabi-v7a" ;;
-  *) echo "usage: $0 [all|arm64|arm]" >&2; exit 1 ;;
+case "${1:-arm64}" in
+  arm64|arm64-v8a) ABIS="arm64-v8a" ;;
+  all|arm|armeabi-v7a) echo "32-bit extension builds remain paused; use arm64" >&2; exit 1 ;;
+  *) echo "usage: $0 [arm64]" >&2; exit 1 ;;
 esac
-[ "$build_all" = true ] && ABIS="arm64-v8a armeabi-v7a"
 
 # ---------- per-ABI toolchain variables ----------
 abi_triple() {
@@ -223,115 +220,8 @@ for ABI in $ABIS; do
     cp -f ../include/*.h "$STAGE/include/"
   )
 
-  # ---------- tcc (two-stage, per Termux) ----------
-  (
-    cd "$SRC"
-    rm -rf "tcc-$ABI"
-    tar -xzf "$TARBALL_DIR/tcc/tinycc-mob-20260922.tar.gz"
-    mv tinycc "tcc-$ABI"
-    cd "tcc-$ABI"
-
-    # Stage 1: build a host tcc that will assemble libtcc1.a later.
-    sysinc=
-    otherinc=
-    for d in $(echo | "$CC" -E -x c - -v 2>&1 | \
-        sed -n '/^#include <...> search/,/^End/p' | \
-        grep '^[[:space:]]'); do
-      case "$d" in
-        */sysroot/usr/*) sysinc="$sysinc$(readlink -f "$d"):" ;;
-        *) otherinc="$otherinc$(readlink -f "$d"):" ;;
-      esac
-    done
-    sysinc="${sysinc}${otherinc%:}"
-
-    ./configure --prefix="/tmp/tcc.host.$ABI" --cpu="$CPU" \
-      --sysincludepaths="$sysinc"
-    make -j"$JOBS" tcc
-    mv -f tcc tcc.host
-    make distclean >/dev/null
-
-    # Stage 2: cross tcc that runs on Android. Paths are configured against the
-    # on-device prefix so tcc finds libtcc1/crt/headers at runtime.
-    ./configure \
-      --prefix="$DEV_PREFIX" \
-      --cross-prefix="$BIN/${TRIPLE}-" \
-      --cc=clang \
-      --cpu="$CPU" \
-      --disable-rpath \
-      --elfinterp="$(abi_interpreter "$ABI")" \
-      --crtprefix="$DEV_PREFIX/lib/tcc/crt" \
-      --sysincludepaths="$DEV_PREFIX/include:$DEV_PREFIX/lib/tcc/include" \
-      --libpaths="$DEV_PREFIX/lib:/system/lib64:/system/vendor/lib64:/system/lib:/system/vendor/lib"
-    # c2str.exe is a build-time host tool; the cross-configured Makefile would
-    # build it with the Android clang (cannot run on this machine). Compile it
-    # with the host compiler instead and generate tccdefs_.h up front.
-    gcc -DC2STR conftest.c -o c2str.exe
-    ./c2str.exe include/tccdefs.h tccdefs_.h
-    # tcc's Makefile derives AR/other tools from --cross-prefix but the NDK
-    # only ships llvm-ar; override the tool variables explicitly. bionic has
-    # pthread/dl built in, so strip -lpthread/-ldl from LIBS.
-    make -j"$JOBS" tcc AR="$BIN/llvm-ar" LIBS="-lm"
-    mv -f tcc tcc.cross
-    cp -f tcc.host tcc
-    # Compile libtcc1 objects with the NDK clang (which runs here) and pack
-    # the archive with llvm-ar. The plain `make libtcc1.a` flow would need a
-    # runnable target tcc, which we do not have while cross-building.
-    ( cd lib &&
-      # arm64 runtime support: lib-arm64.c plus the generic helpers.
-      # armflush.c uses __arm64_clear_cache which only exists when compiled
-      # by tcc itself; with clang provide a small inline equivalent instead.
-      for c in lib-arm64.c libtcc1.c stdatomic.c builtin.c dsohandle.c; do
-        "$CC" -c "$c" -o "${c%.c}.o" -I.. -B.. -O2 -fPIC || exit 1
-      done
-      cat > armflush-clang.c <<'CEOF'
-#include <stdint.h>
-#include <sys/mman.h>
-#include <unistd.h>
-void __clear_cache(void *beg, void *end) {
-    const long CACHESIZE = 4096;
-    uintptr_t p = (uintptr_t) beg & ~(CACHESIZE - 1);
-    uintptr_t e = (uintptr_t) end;
-    for (; p < e; p += CACHESIZE) __builtin___clear_cache((char *) p, (char *) (p + CACHESIZE));
-    (void) 0;
-}
-CEOF
-      "$CC" -c armflush-clang.c -o armflush.o -O2 -fPIC || exit 1
-      for s in atomic.S alloca.S alloca-bt.S; do
-        "$CC" -c "$s" -o "${s%.S}.o" -I.. -B.. || exit 1
-      done
-      "$BIN/llvm-ar" rcs ../libtcc1.a \
-        libtcc1.o lib-arm64.o stdatomic.o atomic.o builtin.o \
-        alloca.o alloca-bt.o dsohandle.o armflush.o
-    )
-    rm -f tcc
-    mv -f tcc.cross tcc
-    # Do not run `make install`; stage files manually so nothing depends on
-    # the host layout.
-    "$BIN/llvm-strip" -s tcc
-    TCC_PACKAGE="$DEST/optional/tcc"
-    mkdir -p "$TCC_PACKAGE/bin" "$TCC_PACKAGE/lib/tcc/crt" "$TCC_PACKAGE/include"
-    cp -f tcc "$TCC_PACKAGE/bin/tcc"
-    if [ -f libtcc1.a ]; then
-      cp -f libtcc1.a "$TCC_PACKAGE/lib/tcc/libtcc1.a"
-    fi
-    if [ -f include/tcclib.h ]; then
-      cp -f include/tcclib.h "$TCC_PACKAGE/include/"
-    fi
-    # NDK bionic headers and CRT are required by on-device tcc, not by the APK.
-    SYSROOT="$NDK/toolchains/llvm/prebuilt/linux-$(uname -m)/sysroot"
-    cp -f "$SYSROOT/usr/lib/$HOST/$API/"crt*.o "$TCC_PACKAGE/lib/tcc/crt/"
-    if [ -f "$SYSROOT/usr/lib/$HOST/$API/libgcc.a" ]; then
-      cp -f "$SYSROOT/usr/lib/$HOST/$API/libgcc.a" "$TCC_PACKAGE/lib/tcc/"
-    fi
-    for d in "$SYSROOT/usr/include"/*; do
-      b=$(basename "$d")
-      case "$b" in
-        aarch64-linux-android|arm-linux-androideabi|i686-linux-android|x86_64-linux-android) ;;
-        *) cp -rf "$d" "$TCC_PACKAGE/include/" ;;
-      esac
-    done
-    cp -rf "$SYSROOT/usr/include/$HOST"/. "$TCC_PACKAGE/include/"
-  )
+  # ---------- optional tcc (independent Git checkout/build project) ----------
+  sh "$ROOT/tools/build-tcc.sh" "$ABI"
 
   # ---------- dpkg ----------
   (
@@ -348,6 +238,7 @@ CEOF
       -e 's/^#if defined(SYNC_FILE_RANGE_WRITE)$/#if 0/' \
       -e 's/^#if defined(SYNC_FILE_RANGE_WAIT_BEFORE)$/#if 0/' \
       src/main/archives.c
+    sh "$ROOT/tools/prepare-dpkg-source.sh" "$SRC/dpkg-$ABI"
     mkdir -p build-"$ABI"
     cd build-"$ABI"
 

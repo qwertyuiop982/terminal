@@ -1,0 +1,20 @@
+--- a/apt-private/private-download.cc
++++ b/apt-private/private-download.cc
+@@ -126,7 +126,7 @@
+ 									/*}}}*/
+ bool CheckFreeSpaceBeforeDownload(std::string const &Dir, unsigned long long FetchBytes)/*{{{*/
+ {
+-   uint32_t const RAMFS_MAGIC = 0x858458f6;
++   uint32_t const APT_RAMFS_MAGIC = 0x858458f6;
+    /* Check for enough free space, but only if we are actually going to
+       download */
+    if (_config->FindB("APT::Get::Print-URIs", false) == true ||
+@@ -150,7 +150,7 @@
+ 	 struct statfs Stat;
+ 	 if (statfs(Dir.c_str(),&Stat) != 0
+ #ifdef HAVE_STRUCT_STATFS_F_TYPE
+-	       || Stat.f_type != RAMFS_MAGIC
++	       || Stat.f_type != APT_RAMFS_MAGIC
+ #endif
+ 	    )
+ 	    return _error->Error(_("You don't have enough free space in %s."),

@@ -9,6 +9,7 @@ import android.graphics.Typeface
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -31,6 +32,11 @@ class TerminalSurface(context: Context, attrs: AttributeSet? = null) : View(cont
     private var cellWidth = paint.measureText("M")
     private var cellHeight = paint.fontSpacing
     private var baseline = -paint.fontMetrics.ascent
+    private var downY = 0f
+    private var lastY = 0f
+    private var touchRemainder = 0f
+    private var dragged = false
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     var onInput: ((String) -> Unit)? = null
     var onResize: ((Int, Int) -> Unit)? = null
     var control = false
@@ -60,6 +66,8 @@ class TerminalSurface(context: Context, attrs: AttributeSet? = null) : View(cont
     }
 
     fun send(text: String) {
+        screen.returnToLive()
+        invalidate()
         if (control) {
             control = false
             val letter = text.singleOrNull()?.uppercaseChar()
@@ -83,7 +91,7 @@ class TerminalSurface(context: Context, attrs: AttributeSet? = null) : View(cont
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val cells = screen.cells
+        val cells = screen.visibleCells()
         for (row in 0 until screen.rows) {
             for (col in 0 until screen.columns) {
                 val cell = cells[row][col]
@@ -101,20 +109,61 @@ class TerminalSurface(context: Context, attrs: AttributeSet? = null) : View(cont
             }
         }
         paint.isFakeBoldText = false
-        if (screen.cursorVisible) {
+        val cursorRow = screen.displayCursorRow
+        if (screen.cursorVisible && cursorRow >= 0) {
             paint.color = 0xff9bcbb4.toInt()
             val x = left + screen.cursorColumn * cellWidth
-            val y = top + screen.cursorRow * cellHeight
+            val y = top + cursorRow * cellHeight
             canvas.drawRect(x, y + cellHeight - 3f, x + cellWidth, y + cellHeight, paint)
         }
     }
 
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
+            screen.scrollBy((event.getAxisValue(MotionEvent.AXIS_VSCROLL) * 3).toInt())
+            invalidate()
+            return true
+        }
+        return super.onGenericMotionEvent(event)
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.action == MotionEvent.ACTION_UP) {
-            requestFocus()
-            (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
-                .showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
-            performClick()
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downY = event.y
+                lastY = event.y
+                touchRemainder = 0f
+                dragged = false
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val total = event.y - downY
+                if (kotlin.math.abs(total) > touchSlop) dragged = true
+                if (dragged) {
+                    touchRemainder += event.y - lastY
+                    val lines = (touchRemainder / cellHeight).toInt()
+                    if (lines != 0) {
+                        screen.scrollBy(lines)
+                        touchRemainder -= lines * cellHeight
+                        invalidate()
+                    }
+                }
+                lastY = event.y
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (!dragged) {
+                    requestFocus()
+                    (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                        .showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+                    performClick()
+                }
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                dragged = false
+                return true
+            }
         }
         return true
     }

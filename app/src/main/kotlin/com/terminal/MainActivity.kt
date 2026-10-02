@@ -10,6 +10,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private val io = Executors.newSingleThreadExecutor()
     @Volatile private var session: TerminalSession? = null
+    @Volatile private var starting = false
     @Volatile private var destroyed = false
     private val pendingInput = StringBuilder()
 
@@ -17,6 +18,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        DebugFeatures.attach(this, binding.root)
         binding.terminal.onInput = { text -> sendInput(text) }
         binding.terminal.onResize = { cols, rows ->
             session?.let { current -> io.execute { current.resize(rows, cols) } }
@@ -31,15 +33,16 @@ class MainActivity : AppCompatActivity() {
         binding.right.setOnClickListener { binding.terminal.send("\u001b[C") }
         binding.terminal.post { startShell() }
     }
-
     private fun startShell() {
-        if (destroyed) return
+        if (destroyed || starting || session?.isRunning == true) return
+        starting = true
         val cols = binding.terminal.columns
         val rows = binding.terminal.rows
         io.execute {
-            if (destroyed || session?.isRunning == true) return@execute
-            session?.close()
             try {
+                if (destroyed) return@execute
+                session?.close()
+                session = null
                 val layout = Rootfs.ensure(this)
                 if (destroyed) return@execute
                 val pty = Pty.open(
@@ -53,14 +56,16 @@ class MainActivity : AppCompatActivity() {
                     pty = pty,
                     onOutput = { bytes -> runOnUiThread { if (!destroyed) binding.terminal.append(bytes) } },
                     onExit = { code ->
-                        runOnUiThread { if (!destroyed) binding.terminal.showMessage("\r\n[dash exited: $code]\r\n") }
+                        runOnUiThread {
+                            if (!destroyed) binding.terminal.showMessage("\r\n[dash exited: $code]\r\n")
+                        }
                     },
                 )
                 session = created
                 created.start()
                 runOnUiThread {
                     if (!destroyed) {
-                        binding.terminal.showMessage("terminal 1.0\r\n")
+                        binding.terminal.showMessage("terminal ${BuildConfig.VERSION_NAME}\r\n")
                         val input = pendingInput.toString()
                         pendingInput.clear()
                         if (input.isNotEmpty()) io.execute { created.write(input) }
@@ -73,6 +78,8 @@ class MainActivity : AppCompatActivity() {
                         Toast.makeText(this, error.message, Toast.LENGTH_LONG).show()
                     }
                 }
+            } finally {
+                starting = false
             }
         }
     }

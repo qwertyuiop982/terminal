@@ -1,0 +1,52 @@
+--- a/apt-pkg/contrib/fileutl.cc
++++ b/apt-pkg/contrib/fileutl.cc
+@@ -119,7 +119,11 @@
+             _exit(100);
+       }
+ 
++#ifdef __ANDROID__
++      if (chdir(GetTempDir().c_str()) != 0)
++#else
+       if (chdir("/tmp/") != 0)
++#endif
+ 	 _exit(100);
+ 	 
+       unsigned int Count = 1;
+@@ -3085,20 +3089,32 @@
+ static std::string APT_NONNULL(1) GetTempDirEnv(char const * const env)	/*{{{*/
+ {
+    const char *tmpdir = getenv(env);
+-
++#ifdef __ANDROID__
++   const char *prefix = getenv("PREFIX");
++   std::string const fallback = prefix != nullptr && prefix[0] == '/'
++      ? std::string(prefix) + "/tmp" : "/data/data/com.terminal/files/usr/tmp";
++   // Only the application's own temp directory is valid for package operations.
++   if (tmpdir != nullptr && strcmp(tmpdir, fallback.c_str()) != 0)
++      tmpdir = fallback.c_str();
++#else
++   std::string const fallback = "/tmp";
+ #ifdef P_tmpdir
+    if (!tmpdir)
+       tmpdir = P_tmpdir;
+ #endif
+-
++#endif
+    struct stat st;
+    if (!tmpdir || strlen(tmpdir) == 0 || // tmpdir is set
+ 	 stat(tmpdir, &st) != 0 || (st.st_mode & S_IFDIR) == 0) // exists and is directory
+-      tmpdir = "/tmp";
++      tmpdir = fallback.c_str();
++#ifdef __ANDROID__
++   else if (access(tmpdir, R_OK | W_OK | X_OK) != 0) // bionic API 24 does not support AT_EACCESS here
++      tmpdir = fallback.c_str();
++#else
+    else if (geteuid() != 0 && // root can do everything anyway
+ 	 faccessat(AT_FDCWD, tmpdir, R_OK | W_OK | X_OK, AT_EACCESS) != 0) // current user has rwx access to directory
+-      tmpdir = "/tmp";
+-
++      tmpdir = fallback.c_str();
++#endif
+    return string(tmpdir);
+ }
+ 									/*}}}*/

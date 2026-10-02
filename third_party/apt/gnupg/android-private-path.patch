@@ -1,0 +1,16 @@
+--- a/common/sysutils.c
++++ b/common/sysutils.c
+@@ -1530,7 +1530,13 @@
+ 
+   /* If we need to switch set PATH to a standard value and make sure
+    * GNUPGHOME is not set. */
++  #ifdef __ANDROID__
++  try_set_envvar ("PATH", "/data/data/com.terminal/files/usr/bin:"
++                  "/data/data/com.terminal/files/usr/sbin:"
++                  "/data/data/com.terminal/files/usr/libexec", silent);
++#else
+   try_set_envvar ("PATH", "/usr/local/bin:/usr/bin:/bin", silent);
++#endif
+   if (gnupg_unsetenv ("GNUPGHOME"))
+     if (!silent)
+       log_info ("error unsetting envvar %s: %s\n", "GNUPGHOME",

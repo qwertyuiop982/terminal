@@ -26,7 +26,7 @@ cmp -s "$ROOT/third_party/ca/ca-bundle.crt" "$FINAL/etc/ssl/cert.pem" ||
     fail 'app CA bundle is missing or outdated'
 [ -s "$FINAL/share/dpkg/sh/dpkg-error.sh" ] || fail 'dpkg-realpath support is missing'
 for name in grep sed awk tar gzip nslookup nc ls cat cp mv rm mkdir touch echo \
-    sleep env date uname whoami wget find ps kill killall; do
+    sleep env date uname whoami wget find ps kill killall diff cmp; do
     grep -Fxq "$name" "$FINAL/share/busybox/applets" || fail "BusyBox applet is missing: $name"
 done
 [ -s "$ROOT/build-ext/out/arm64-v8a/optional/nano/bin/nano" ] || fail 'optional nano is missing'

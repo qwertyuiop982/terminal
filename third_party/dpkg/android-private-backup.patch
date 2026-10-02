@@ -1,0 +1,196 @@
+--- a/lib/dpkg/file.h
++++ b/lib/dpkg/file.h
+@@ -51,6 +51,9 @@
+ ssize_t
+ file_readlink(const char *slink, struct varbuf *content, size_t content_len);
+ 
++/* Android app-data forbids hard links; retain backup content using an atomic copy. */
++int file_link_or_copy(const char *src, const char *dst);
++
+ bool file_is_exec(const char *filename);
+ 
+ void file_copy_perms(const char *src, const char *dst);
+--- a/lib/dpkg/file.c
++++ b/lib/dpkg/file.c
+@@ -27,6 +27,8 @@
+ 
+ #include <errno.h>
+ #include <fcntl.h>
++#include <stdlib.h>
++#include <stdio.h>
+ #include <unistd.h>
+ 
+ #include <dpkg/dpkg.h>
+@@ -36,6 +38,62 @@
+ #include <dpkg/buffer.h>
+ #include <dpkg/file.h>
+ 
++int
++file_link_or_copy(const char *src, const char *dst)
++{
++#ifndef __ANDROID__
++	return link(src, dst);
++#else
++	struct stat st;
++	char *temporary;
++	char buffer[32768];
++	int input = -1, output = -1, result = -1, saved_errno;
++	ssize_t count;
++
++	/* Preserve link()'s no-overwrite contract and do not follow source symlinks. */
++	if (lstat(dst, &st) == 0) { errno = EEXIST; return -1; }
++	if (errno != ENOENT) return -1;
++	input = open(src, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
++	if (input < 0) return -1;
++	if (fstat(input, &st) < 0) { saved_errno = errno; close(input); errno = saved_errno; return -1; }
++	if (!S_ISREG(st.st_mode)) { close(input); errno = EOPNOTSUPP; return -1; }
++
++	temporary = str_fmt("%s-copy.XXXXXX", dst);
++	output = mkstemp(temporary);
++	if (output < 0) goto done;
++	while (1) {
++		count = read(input, buffer, sizeof(buffer));
++		if (count < 0 && errno == EINTR) continue;
++		if (count < 0) goto done;
++		if (count == 0) break;
++		ssize_t offset = 0;
++		while (offset < count) {
++			ssize_t written = write(output, buffer + offset, count - offset);
++			if (written < 0 && errno == EINTR) continue;
++			if (written <= 0) { if (written == 0) errno = EIO; goto done; }
++			offset += written;
++		}
++	}
++	/* Backups remain owned by this app; no root chown or permission broadening. */
++	if (fchmod(output, st.st_mode & 0777) < 0 || fsync(output) < 0) goto done;
++	if (close(output) < 0) { output = -1; goto done; }
++	output = -1;
++	if (lstat(dst, &st) == 0) { errno = EEXIST; goto done; }
++	if (errno != ENOENT) goto done;
++	if (rename(temporary, dst) < 0) goto done;
++	result = 0;
++
++done:
++	saved_errno = errno;
++	if (output >= 0) close(output);
++	close(input);
++	if (result < 0) unlink(temporary);
++	free(temporary);
++	errno = saved_errno;
++	return result;
++#endif
++}
++
+ /**
+  * Read the symlink content into a varbuf.
+  *
+--- a/lib/dpkg/atomic-file.c
++++ b/lib/dpkg/atomic-file.c
+@@ -31,6 +31,7 @@
+ #include <dpkg/i18n.h>
+ #include <dpkg/dpkg.h>
+ #include <dpkg/dir.h>
++#include <dpkg/file.h>
+ #include <dpkg/atomic-file.h>
+ 
+ #define ATOMIC_FILE_NEW_EXT "-new"
+@@ -96,10 +97,24 @@
+ 
+ 	name_old = str_fmt("%s%s", file->name, ATOMIC_FILE_OLD_EXT);
+ 
++#ifdef __ANDROID__
++	/* Keep both current state and previous backup until a durable copy is ready. */
++	char *staged_backup = str_fmt("%s-staged", name_old);
++	if (unlink(staged_backup) && errno != ENOENT)
++		ohshite(_("error removing old backup file '%s'"), staged_backup);
++	if (file_link_or_copy(file->name, staged_backup)) {
++		if (errno != ENOENT)
++			ohshite(_("error creating new backup file '%s'"), name_old);
++	} else if (rename(staged_backup, name_old)) {
++		ohshite(_("error creating new backup file '%s'"), name_old);
++	}
++	free(staged_backup);
++#else
+ 	if (unlink(name_old) && errno != ENOENT)
+ 		ohshite(_("error removing old backup file '%s'"), name_old);
+ 	if (link(file->name, name_old) && errno != ENOENT)
+ 		ohshite(_("error creating new backup file '%s'"), name_old);
++#endif
+ 
+ 	free(name_old);
+ }
+--- a/src/main/archives.c
++++ b/src/main/archives.c
+@@ -432,7 +432,7 @@
+     if (linknode->flags & (FNNF_DEFERRED_RENAME | FNNF_NEW_CONFF))
+       varbuf_add_str(&hardlinkfn, DPKGNEWEXT);
+     varbuf_end_str(&hardlinkfn);
+-    if (link(hardlinkfn.buf, path))
++    if (file_link_or_copy(hardlinkfn.buf, path))
+       ohshite(_("error creating hard link '%.255s'"), te->name);
+     namenode->newhash = linknode->newhash;
+     debug(dbg_eachfiledetail, "tarobject hardlink digest=%s", namenode->newhash);
+@@ -1064,7 +1064,7 @@
+       tarobject_set_se_context(fnamevb.buf, fnametmpvb.buf, stab.st_mode);
+     } else {
+       debug(dbg_eachfiledetail, "tarobject nondirectory, 'link' backup");
+-      if (link(fnamevb.buf,fnametmpvb.buf))
++      if (file_link_or_copy(fnamevb.buf,fnametmpvb.buf))
+         ohshite(_("unable to make backup link of '%.255s' before installing new version"),
+                 ti->name);
+     }
+--- a/src/main/configure.c
++++ b/src/main/configure.c
+@@ -504,7 +504,7 @@
+ 			        pkg_name(pkg, pnaw_nonambig), cdr2.buf,
+ 			        strerror(errno));
+ 		if (!(what & CFOF_USER_DEL))
+-			if (link(cdr.buf, cdr2.buf))
++			if (file_link_or_copy(cdr.buf, cdr2.buf))
+ 				warning(_("%s: failed to link '%.250s' to '%.250s': %s"),
+ 				        pkg_name(pkg, pnaw_nonambig), cdr.buf,
+ 				        cdr2.buf, strerror(errno));
+--- a/lib/dpkg/db-ctrl-upgrade.c
++++ b/lib/dpkg/db-ctrl-upgrade.c
+@@ -33,6 +33,7 @@
+ 
+ #include <dpkg/i18n.h>
+ #include <dpkg/dpkg.h>
++#include <dpkg/file.h>
+ #include <dpkg/dpkg-db.h>
+ #include <dpkg/fsys.h>
+ #include <dpkg/db-ctrl.h>
+@@ -139,7 +140,7 @@
+ 		varbuf_add_str(&newname, filetype);
+ 		varbuf_end_str(&newname);
+ 
+-		if (link(oldname.buf, newname.buf) && errno != EEXIST)
++		if (file_link_or_copy(oldname.buf, newname.buf) && errno != EEXIST)
+ 			ohshite(_("error creating hard link '%.255s'"),
+ 			        newname.buf);
+ 		rename_head = rename_node_new(oldname.buf, newname.buf, rename_head);
+@@ -160,7 +161,7 @@
+ 	/* Restore the old files if needed and drop the newly created files. */
+ 	while (rename_head) {
+ 		next = rename_head->next;
+-		if (link(rename_head->new, rename_head->old) && errno != EEXIST)
++		if (file_link_or_copy(rename_head->new, rename_head->old) && errno != EEXIST)
+ 			ohshite(_("error creating hard link '%.255s'"),
+ 			        rename_head->old);
+ 		if (unlink(rename_head->new))
+--- a/lib/dpkg/path.c
++++ b/lib/dpkg/path.c
+@@ -105,8 +105,12 @@
+ 	const char *tmpdir;
+ 
+ 	tmpdir = getenv("TMPDIR");
+-	if (!tmpdir)
++	if (!tmpdir || !tmpdir[0])
++#ifdef __ANDROID__
++		tmpdir = "/data/data/com.terminal/files/usr/tmp";
++#else
+ 		tmpdir = P_tmpdir;
++#endif
+ 
+ 	return str_fmt("%s/%s.XXXXXX", tmpdir, suffix);
+ }

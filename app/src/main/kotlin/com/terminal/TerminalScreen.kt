@@ -3,8 +3,9 @@ package com.terminal
 import java.nio.ByteBuffer
 import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
+import java.util.ArrayDeque
 
-/** A small VT-style screen with a scrollback-free alternate buffer for full-screen programs. */
+/** A small VT-style screen with bounded scrollback and an alternate buffer for full-screen programs. */
 internal class TerminalScreen(initialColumns: Int = 80, initialRows: Int = 24) {
     data class Cell(var text: String = " ", var foreground: Int = 0xffd7e0ea.toInt(),
                     var background: Int = 0xff111418.toInt(), var bold: Boolean = false)
@@ -20,6 +21,11 @@ internal class TerminalScreen(initialColumns: Int = 80, initialRows: Int = 24) {
     var cursorVisible = true
         private set
     private var screen = emptyGrid()
+    private val scrollback = ArrayDeque<Array<Cell>>()
+    private var scrollOffset = 0
+    private var hasWritten = false
+    private var wrapPending = false
+    private val maxScrollbackRows = 2000
     private var mainScreen: Array<Array<Cell>>? = null
     private var mainCursor = 0 to 0
     private var scrollTop = 0
@@ -37,28 +43,92 @@ internal class TerminalScreen(initialColumns: Int = 80, initialRows: Int = 24) {
         .onUnmappableCharacter(CodingErrorAction.REPLACE)
 
     val cells: Array<Array<Cell>> get() = screen
+
+    fun visibleCells(): Array<Array<Cell>> {
+        if (scrollOffset == 0 || mainScreen != null || scrollback.isEmpty()) return screen
+        val combined = ArrayList<Array<Cell>>(scrollback.size + screen.size)
+        combined.addAll(scrollback)
+        combined.addAll(screen.asList())
+        val start = (combined.size - rows - scrollOffset).coerceAtLeast(0)
+        return Array(rows) { index ->
+            combined.getOrNull(start + index) ?: Array(columns) { Cell() }
+        }
+    }
+
+    val displayCursorRow: Int
+        get() = if (scrollOffset == 0 || mainScreen != null) cursorRow else -1
+
+    fun scrollBy(lines: Int) {
+        if (mainScreen != null || lines == 0) return
+        scrollOffset = (scrollOffset + lines).coerceIn(0, scrollback.size)
+    }
+
+    fun returnToLive() {
+        scrollOffset = 0
+    }
     var onReply: ((String) -> Unit)? = null
 
     fun resize(newColumns: Int, newRows: Int) {
         val width = newColumns.coerceAtLeast(2)
         val height = newRows.coerceAtLeast(2)
         if (width == columns && height == rows) return
-        val old = screen
-        val next = Array(height) { Array(width) { Cell() } }
-        for (row in 0 until minOf(height, rows)) {
-            for (col in 0 until minOf(width, columns)) next[row][col] = old[row][col]
+        val emptyBeforeFirstOutput = !hasWritten
+        val dropped = (rows - height).coerceAtLeast(0)
+        val added = (height - rows).coerceAtLeast(0)
+        val saved = mainScreen
+        val historySource = saved ?: screen
+        repeat(dropped) { remember(historySource[it]) }
+        val restored = ArrayList<Array<Cell>>()
+        repeat(minOf(added, scrollback.size)) { restored.add(0, scrollback.removeLast()) }
+        scrollOffset = (scrollOffset - restored.size).coerceIn(0, scrollback.size)
+        if (width != columns) {
+            val resizedHistory = scrollback.map { copyRow(it, width) }
+            scrollback.clear()
+            scrollback.addAll(resizedHistory)
         }
+        if (saved != null) {
+            mainScreen = resizeGrid(saved, width, height, restored)
+            mainCursor = (mainCursor.first - dropped + added).coerceIn(0, height - 1) to
+                mainCursor.second.coerceIn(0, width - 1)
+            screen = resizeGrid(screen, width, height, emptyList())
+        } else {
+            screen = resizeGrid(screen, width, height, restored)
+        }
+        cursorRow = if (emptyBeforeFirstOutput) 0 else (cursorRow - dropped + added).coerceIn(0, height - 1)
+        cursorColumn = cursorColumn.coerceIn(0, width - 1)
+        savedRow = (savedRow - dropped + added).coerceIn(0, height - 1)
+        savedColumn = savedColumn.coerceIn(0, width - 1)
         columns = width
         rows = height
-        screen = next
-        mainScreen = null
-        cursorRow = cursorRow.coerceIn(0, rows - 1)
-        cursorColumn = cursorColumn.coerceIn(0, columns - 1)
         scrollTop = 0
-        scrollBottom = rows - 1
+        scrollBottom = height - 1
+        wrapPending = false
+    }
+
+    private fun resizeGrid(old: Array<Array<Cell>>, width: Int, height: Int,
+                           restored: List<Array<Cell>>): Array<Array<Cell>> {
+        val next = Array(height) { Array(width) { Cell() } }
+        val drop = (rows - height).coerceAtLeast(0)
+        val add = (height - rows).coerceAtLeast(0)
+        restored.forEachIndexed { index, line ->
+            next[add - restored.size + index] = copyRow(line, width)
+        }
+        for (row in drop until rows) next[add + row - drop] = copyRow(old[row], width)
+        return next
+    }
+
+    private fun copyRow(row: Array<Cell>, width: Int): Array<Cell> =
+        Array(width) { column -> row.getOrNull(column)?.copy() ?: Cell() }
+
+    private fun remember(row: Array<Cell>) {
+        if (scrollOffset > 0) scrollOffset++
+        scrollback.addLast(copyRow(row, columns))
+        if (scrollback.size > maxScrollbackRows) scrollback.removeFirst()
+        scrollOffset = scrollOffset.coerceAtMost(scrollback.size)
     }
 
     fun append(bytes: ByteArray) {
+        if (bytes.isNotEmpty()) hasWritten = true
         val data = pendingBytes + bytes
         val input = ByteBuffer.wrap(data)
         val output = CharBuffer.allocate(data.size + 1)
@@ -70,6 +140,7 @@ internal class TerminalScreen(initialColumns: Int = 80, initialRows: Int = 24) {
     }
 
     fun writeLocal(message: String) {
+        if (message.isNotEmpty()) hasWritten = true
         message.forEach(::accept)
     }
 
@@ -85,10 +156,13 @@ internal class TerminalScreen(initialColumns: Int = 80, initialRows: Int = 24) {
                     '(', ')' -> state = 5
                     '7' -> { savedRow = cursorRow; savedColumn = cursorColumn }
                     '8' -> { cursorRow = savedRow.coerceIn(0, rows - 1); cursorColumn = savedColumn.coerceIn(0, columns - 1) }
-                    'D' -> lineFeed()
-                    'E' -> { cursorColumn = 0; lineFeed() }
-                    'M' -> reverseLineFeed()
-                    'c' -> { screen = emptyGrid(); cursorRow = 0; cursorColumn = 0 }
+                    'D' -> { wrapPending = false; lineFeed() }
+                    'E' -> { wrapPending = false; cursorColumn = 0; lineFeed() }
+                    'M' -> { wrapPending = false; reverseLineFeed() }
+                    'c' -> {
+                        screen = emptyGrid(); cursorRow = 0; cursorColumn = 0
+                        wrapPending = false; scrollback.clear(); scrollOffset = 0
+                    }
                 }
             }
             2 -> {
@@ -107,25 +181,33 @@ internal class TerminalScreen(initialColumns: Int = 80, initialRows: Int = 24) {
             5 -> state = 0
             else -> when (char) {
                 '\u001b' -> state = 1
-                '\r' -> cursorColumn = 0
-                '\n', '\u000b', '\u000c' -> lineFeed()
-                '\b' -> cursorColumn = (cursorColumn - 1).coerceAtLeast(0)
-                '\t' -> cursorColumn = ((cursorColumn / 8 + 1) * 8).coerceAtMost(columns - 1)
+                '\r' -> { wrapPending = false; cursorColumn = 0 }
+                '\n', '\u000b', '\u000c' -> { wrapPending = false; lineFeed() }
+                '\b' -> { wrapPending = false; cursorColumn = (cursorColumn - 1).coerceAtLeast(0) }
+                '\t' -> {
+                    wrapPending = false
+                    cursorColumn = ((cursorColumn / 8 + 1) * 8).coerceAtMost(columns - 1)
+                }
                 else -> if (char >= ' ') put(char)
             }
         }
     }
 
     private fun put(char: Char) {
-        screen[cursorRow][cursorColumn] = Cell(char.toString(), foreground, background, bold)
-        if (cursorColumn == columns - 1) {
+        if (wrapPending) {
             cursorColumn = 0
             lineFeed()
-        } else cursorColumn++
+            wrapPending = false
+        }
+        screen[cursorRow][cursorColumn] = Cell(char.toString(), foreground, background, bold)
+        if (cursorColumn == columns - 1) wrapPending = true else cursorColumn++
     }
 
     private fun lineFeed() {
         if (cursorRow == scrollBottom) {
+            if (scrollTop == 0 && scrollBottom == rows - 1 && mainScreen == null) {
+                remember(screen[0])
+            }
             for (row in scrollTop until scrollBottom) screen[row] = screen[row + 1]
             screen[scrollBottom] = Array(columns) { Cell() }
         } else cursorRow = (cursorRow + 1).coerceAtMost(rows - 1)
@@ -155,6 +237,7 @@ internal class TerminalScreen(initialColumns: Int = 80, initialRows: Int = 24) {
     }
 
     private fun csi(command: Char, value: String) {
+        if (command != 'm') wrapPending = false
         val privateMode = value.startsWith('?')
         val args = value.trimStart('?').split(';').map { it.toIntOrNull() ?: 0 }
         fun arg(index: Int, fallback: Int = 1) = (args.getOrNull(index) ?: 0).takeIf { it > 0 } ?: fallback
@@ -214,6 +297,7 @@ internal class TerminalScreen(initialColumns: Int = 80, initialRows: Int = 24) {
 
     private fun alternate(enabled: Boolean) {
         if (enabled && mainScreen == null) {
+            returnToLive()
             mainScreen = screen
             mainCursor = cursorRow to cursorColumn
             screen = emptyGrid()

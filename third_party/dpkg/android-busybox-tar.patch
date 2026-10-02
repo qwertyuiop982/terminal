@@ -1,0 +1,14 @@
+--- a/src/deb/extract.c
++++ b/src/deb/extract.c
+@@ -338,7 +338,11 @@
+ 
+       command_add_arg(&cmd, "-f");
+       command_add_arg(&cmd, "-");
++#ifndef __ANDROID__
+       command_add_arg(&cmd, "--warning=no-timestamp");
++#endif
++      /* Android uses the private BusyBox tar; only this GNU warning toggle
++       * is unavailable. Archive parsing and extraction errors remain fatal. */
+ 
+       m_dup2(p2[0],0);
+       close(p2[0]);

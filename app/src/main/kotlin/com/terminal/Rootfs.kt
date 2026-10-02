@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.res.AssetManager
 import android.net.ConnectivityManager
 import android.os.Build
-import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
 import java.io.File
@@ -23,11 +22,20 @@ object Rootfs {
     private const val PREFIX_VERSION_FILE = "VERSION"
     private const val PREFIX_MANIFEST_FILE = "MANAGED_FILES"
     private const val PREFIX_MARKER_FILE = ".terminal-prefix-version"
+    private const val SHELL_MARKER_FILE = ".terminal-shell-version"
+    private val sha256Pattern = Regex("[0-9a-f]{64}")
 
+    @Synchronized
     fun ensure(context: Context): Layout {
-        val files = context.filesDir
+        val files = runtimeFiles(context)
         val home = File(files, "home")
         val usr = File(files, "usr")
+        for (root in listOf(home, usr)) {
+            if (isSymbolicLink(root)) throw IOException("private root is a symbolic link: $root")
+            if (!root.isDirectory && !root.mkdirs()) throw IOException("cannot create private directory: $root")
+        }
+        val before = PrivatePermissions.audit(listOf(files.parentFile!!), repair = true)
+        if (before.issues.isNotEmpty()) throw IOException(before.issues.joinToString("; "))
         val directories = listOf(
             home,
             File(usr, "bin"),
@@ -56,7 +64,10 @@ object Rootfs {
             File(usr, "var/tmp"),
             File(usr, "tmp"),
         )
-        directories.forEach { it.mkdirs() }
+        directories.forEach { directory ->
+            if (directory != home) prefixTarget(usr, directory.relativeTo(usr).invariantSeparatorsPath)
+            if (!directory.isDirectory && !directory.mkdirs()) throw IOException("cannot create private directory: $directory")
+        }
         installPrefix(context, usr)
         val shellFile = shell(context, usr)
         writeIfMissing(File(usr, "etc/passwd"), passwd(home, shellFile))
@@ -64,6 +75,7 @@ object Rootfs {
         writeIfMissing(File(usr, "etc/hosts"), hosts())
         ensureResolver(context, usr)
         writeIfMissing(File(usr, "etc/profile"), profile(home, usr))
+        migrateLegacyConfigPaths(usr)
         migrateProfile(File(usr, "etc/profile"))
         writeIfMissing(File(usr, "etc/apt/sources.list"), "# package sources are added later\n")
         ensureAptConfig(usr)
@@ -73,8 +85,11 @@ object Rootfs {
         writeIfMissing(File(usr, "var/lib/dpkg/status"), "")
         writeIfMissing(File(usr, "var/lib/dpkg/available"), "")
         writeIfMissing(File(usr, "var/log/dpkg.log"), "")
-        File(usr, "tmp").setWritable(true, true)
-        File(usr, "var/tmp").setWritable(true, true)
+        PrivatePermissions.repairStateFiles(usr)
+        val after = PrivatePermissions.audit(listOf(files.parentFile!!), repair = true)
+        val report = PrivatePermissions.Report(after.directories, before.repaired + after.repaired, after.issues)
+        writeConfigAtomically(File(usr, "var/log/terminal-permissions.log"), report.text())
+        if (report.issues.isNotEmpty()) throw IOException(report.issues.joinToString("; "))
         return Layout(home, usr, shellFile)
     }
 
@@ -88,13 +103,15 @@ object Rootfs {
         ).joinToString(":")
         return arrayOf(
             "HOME=$home",
+            "PWD=$home",
             "USR=$usr",
             "PREFIX=$usr",
             "TMPDIR=$usr/tmp",
             "LD_LIBRARY_PATH=$usr/lib",
             "SSL_CERT_FILE=$usr/etc/ssl/cert.pem",
             "SSL_CERT_DIR=/apex/com.android.conscrypt/cacerts:/system/etc/security/cacerts",
-            "TERMINFO=$usr/share/terminfo",
+            "TERMINFO=$usr/share/terminal/terminfo",
+            "TERMINFO_DIRS=$usr/share/terminal/terminfo:$usr/share/terminfo",
             "APT_CONFIG=$usr/etc/apt/apt.conf",
             "DPKG_ROOT=$usr",
             "DPKG_ADMINDIR=$usr/var/lib/dpkg",
@@ -109,6 +126,74 @@ object Rootfs {
         )
     }
 
+    private fun runtimeFiles(context: Context): File {
+        if (context.packageName != PrivatePaths.PACKAGE_NAME) {
+            throw IOException("application package does not match the compiled private prefix")
+        }
+        val appFiles = context.filesDir
+        val files = File(PrivatePaths.FILES)
+        try {
+            val actual = Os.stat(appFiles.absolutePath)
+            val preferred = Os.stat(files.absolutePath)
+            if (actual.st_dev != preferred.st_dev || actual.st_ino != preferred.st_ino) {
+                throw IOException("/data/data prefix does not belong to this Android user")
+            }
+        } catch (e: android.system.ErrnoException) {
+            throw IOException("cannot access this application's /data/data prefix", e)
+        }
+        return files
+    }
+
+    private fun migrateLegacyConfigPaths(usr: File) {
+        val files = mutableListOf(
+            File(usr, "etc/profile"),
+            File(usr, "etc/passwd"),
+            File(usr, "etc/dpkg/dpkg.cfg"),
+        )
+        File(usr, "etc/apt").listFiles()?.filter {
+            it.name == "apt.conf" || it.name.startsWith("sources.list")
+        }?.let(files::addAll)
+        File(usr, "etc/apt/sources.list.d").listFiles()?.filter {
+            it.name.endsWith(".list") || it.name.endsWith(".sources")
+        }?.let(files::addAll)
+        for (directory in listOf("etc/apt/apt.conf.d", "etc/dpkg/dpkg.cfg.d")) {
+            File(usr, directory).listFiles()?.let { entries -> files.addAll(entries) }
+        }
+        for (file in files) {
+            if (!file.isFile || isSymbolicLink(file)) continue
+            val relative = file.relativeTo(usr).invariantSeparatorsPath
+            prefixTarget(usr, relative)
+            val original = file.readText()
+            val updated = PrivatePaths.migrateLegacyPaths(original)
+            if (updated == original) continue
+            // Keep the original outside apt's configuration directories so it is
+            // neither overwritten nor loaded as a second source/config fragment.
+            val backup = prefixTarget(usr, "var/backups/terminal-paths/$relative")
+            if (isSymbolicLink(backup)) throw IOException("config backup is a symbolic link: $relative")
+            if (!backup.exists()) {
+                backup.parentFile?.mkdirs()
+                writeConfigAtomically(backup, original)
+            }
+            writeConfigAtomically(file, updated)
+        }
+    }
+
+    private fun writeConfigAtomically(file: File, contents: String) {
+        if (isSymbolicLink(file)) throw IOException("config is a symbolic link: ${file.name}")
+        val mode = if (file.exists()) Os.stat(file.absolutePath).st_mode and 0x1ff else 0x180
+        val temporary = File.createTempFile(".config-", ".tmp", file.parentFile)
+        try {
+            FileOutputStream(temporary).use { output ->
+                output.write(contents.toByteArray(Charsets.UTF_8))
+                output.fd.sync()
+            }
+            Os.chmod(temporary.absolutePath, mode)
+            if (!temporary.renameTo(file)) throw IOException("cannot migrate private config: ${file.name}")
+        } finally {
+            temporary.delete()
+        }
+    }
+
     private fun installPrefix(context: Context, usr: File) {
         val abi = supportedAbi()
         val assetRoot = "prefix/$abi"
@@ -120,34 +205,65 @@ object Rootfs {
         }
         if (expectedVersion.isEmpty()) return
 
+        val manifestAsset = "$assetRoot/$PREFIX_MANIFEST_FILE"
+        val manifestContents = context.assets.open(manifestAsset).bufferedReader().use { it.readText() }
+        val expectedFiles = parseAssetManifest(manifestContents)
+        val manifest = File(usr, PREFIX_MANIFEST_FILE)
         val marker = File(usr, PREFIX_MARKER_FILE)
-        val installedVersion = marker.takeIf { it.isFile }?.readText()?.trim()
-        if (installedVersion == expectedVersion && prefixLooksComplete(usr)) {
+        val installedVersion = marker.takeIf { it.isFile && !isSymbolicLink(it) }?.readText()?.trim()
+        if (installedVersion == expectedVersion && manifest.isFile && !isSymbolicLink(manifest) &&
+            manifest.readText() == manifestContents && prefixLooksComplete(usr, expectedFiles.keys)) {
             installBusyboxLinks(usr)
             return
         }
 
-        val expectedFiles = context.assets.open("$assetRoot/$PREFIX_MANIFEST_FILE").bufferedReader().useLines { lines ->
-            lines.map { it.substringAfter(' ', "") }.filter { it.isNotEmpty() }.toSet()
+        // Keep the previous inventory until the new assets are complete. A failed upgrade
+        // must be retryable without losing track of which old files belonged to the APK.
+        removeOldManagedFiles(usr, expectedFiles)
+        val localConfigs = setOf("etc/dpkg/dpkg.cfg", "etc/apt/apt.conf", "etc/apt/sources.list",
+            "etc/resolv.conf", "etc/profile", "etc/passwd", "etc/group", "etc/hosts")
+        expectedFiles.forEach { (relative, hash) ->
+            val target = prefixTarget(usr, relative)
+            // Runtime/user config edits survive a binary-only APK upgrade.
+            if (relative in localConfigs && target.isFile && !isSymbolicLink(target)) return@forEach
+            copyAsset(context.assets, "$assetRoot/$relative", target, hash)
         }
-        marker.delete()
-        removeOldManagedFiles(usr)
-        File(usr, PREFIX_MANIFEST_FILE).delete()
-        extractAssetTree(context.assets, assetRoot, usr, assetRoot, expectedFiles)
-        if (!prefixLooksComplete(usr)) throw IOException("incomplete APK prefix assets")
+        if (!prefixLooksComplete(usr, expectedFiles.keys)) throw IOException("incomplete APK prefix assets")
         installBusyboxLinks(usr)
-        marker.writeText("$expectedVersion\n")
+        install(context, manifestAsset, manifest)
+        writeVersionMarker(marker, expectedVersion)
     }
 
-    private fun prefixLooksComplete(usr: File): Boolean {
-        val manifest = File(usr, PREFIX_MANIFEST_FILE)
-        if (!manifest.isFile) return false
-        val managed = manifest.useLines { lines ->
-            lines.mapNotNull { line ->
-                val separator = line.indexOf(' ')
-                if (separator > 0) line.substring(separator + 1) else null
-            }.toSet()
+    private fun parseAssetManifest(contents: String): Map<String, String> {
+        val managed = LinkedHashMap<String, String>()
+        contents.lineSequence().filter { it.isNotEmpty() }.forEach { line ->
+            val separator = line.indexOf(' ')
+            val relative = line.substringAfter(' ', "")
+            if (separator != 64 || !line.substring(0, separator).matches(sha256Pattern) ||
+                !safeRelativePath(relative) || relative == PREFIX_MANIFEST_FILE ||
+                relative == PREFIX_VERSION_FILE || managed.put(relative, line.substring(0, separator)) != null) {
+                throw IOException("invalid APK prefix manifest")
+            }
         }
+        if (managed.isEmpty()) throw IOException("empty APK prefix manifest")
+        return managed
+    }
+
+    private fun safeRelativePath(relative: String): Boolean =
+        relative.isNotEmpty() && !relative.contains('\\') && !relative.contains('\u0000') &&
+            relative.split('/').all { it.isNotEmpty() && it != "." && it != ".." }
+
+    private fun prefixTarget(usr: File, relative: String): File {
+        val target = File(usr, relative)
+        val root = usr.canonicalPath
+        val parent = target.parentFile?.canonicalPath
+        if (parent == null || (parent != root && !parent.startsWith("$root/"))) {
+            throw IOException("prefix asset escapes private directory: $relative")
+        }
+        return target
+    }
+
+    private fun prefixLooksComplete(usr: File, managed: Set<String>): Boolean {
         val required = listOf(
             "bin/dpkg",
             "bin/dpkg-realpath",
@@ -166,34 +282,43 @@ object Rootfs {
         }
     }
 
-    private fun removeOldManagedFiles(usr: File) {
+    private fun writeVersionMarker(marker: File, version: String) {
+        val temporary = File.createTempFile(".prefix-version.", ".tmp", marker.parentFile)
+        try {
+            temporary.writeText("$version\n")
+            if (!temporary.renameTo(marker)) throw IOException("cannot update APK prefix version")
+        } finally {
+            temporary.delete()
+        }
+    }
+
+    private fun removeOldManagedFiles(usr: File, expectedFiles: Map<String, String>) {
         val manifest = File(usr, PREFIX_MANIFEST_FILE)
-        if (!manifest.isFile) return // Legacy installs had no inventory: preserve their contents.
+        if (!manifest.isFile || isSymbolicLink(manifest)) return // Preserve legacy installs and invalid inventories.
         val packageOwned = dpkgOwnedPaths(usr)
-        val root = try {
-            usr.canonicalFile
+        val rootPrefix = try {
+            usr.canonicalPath + File.separator
         } catch (_: IOException) {
             return
         }
-        val rootPrefix = root.path + File.separator
         manifest.forEachLine { line ->
             val separator = line.indexOf(' ')
             if (separator != 64) return@forEachLine
             val hash = line.substring(0, separator)
             val relative = line.substring(separator + 1)
-            if (!hash.matches(Regex("[0-9a-f]{64}")) || relative.isEmpty() ||
-                relative in packageOwned) return@forEachLine
-            val path = File(root, relative)
+            if (!hash.matches(sha256Pattern) || !safeRelativePath(relative) ||
+                relative in packageOwned || expectedFiles[relative] == hash) return@forEachLine
+            val path = File(usr, relative)
             val canonical = try {
                 path.canonicalFile
             } catch (_: IOException) {
                 return@forEachLine
             }
-            if (!canonical.path.startsWith(rootPrefix) || isSymbolicLink(path) || !canonical.isFile) {
+            if (!canonical.path.startsWith(rootPrefix) || isSymbolicLink(path) || !path.isFile) {
                 return@forEachLine
             }
             val digest = MessageDigest.getInstance("SHA-256")
-            canonical.inputStream().use { input ->
+            path.inputStream().use { input ->
                 val buffer = ByteArray(8192)
                 while (true) {
                     val count = input.read(buffer)
@@ -202,7 +327,7 @@ object Rootfs {
                 }
             }
             if (digest.digest().joinToString("") { "%02x".format(it) } == hash) {
-                canonical.delete()
+                path.delete()
             }
         }
     }
@@ -242,51 +367,57 @@ object Rootfs {
         }
     }
 
-    private fun extractAssetTree(
-        assets: AssetManager,
-        assetPath: String,
-        destination: File,
-        rootAssetPath: String,
-        expectedFiles: Set<String>,
-    ) {
-        val entries = assets.list(assetPath).orEmpty()
-        destination.mkdirs()
-        entries.forEach { name ->
-            if (assetPath == rootAssetPath && name == PREFIX_VERSION_FILE) return@forEach
-            val childAsset = "$assetPath/$name"
-            val target = File(destination, name)
-            val children = assets.list(childAsset).orEmpty()
-            if (children.isNotEmpty()) {
-                extractAssetTree(assets, childAsset, target, rootAssetPath, expectedFiles)
-            } else if (name == PREFIX_MANIFEST_FILE ||
-                childAsset.removePrefix("$rootAssetPath/") in expectedFiles) {
-                copyAsset(assets, childAsset, target)
-            } else {
-                target.mkdirs()
+    private fun copyAsset(assets: AssetManager, assetPath: String, destination: File, expectedHash: String) {
+        if (destination.exists() || isSymbolicLink(destination)) {
+            if (isSymbolicLink(destination) || !fileHash(destination).equals(expectedHash, ignoreCase = true)) {
+                throw IOException("APK asset conflicts with existing file: ${destination.relativeTo(destination.parentFile?.parentFile ?: destination)}")
             }
+            return
         }
-    }
-
-    private fun copyAsset(assets: AssetManager, assetPath: String, destination: File) {
-        if (destination.exists() || isSymbolicLink(destination)) return
         destination.parentFile?.mkdirs()
         val temporary = File.createTempFile(".${destination.name}.", ".tmp", destination.parentFile)
         try {
+            val digest = MessageDigest.getInstance("SHA-256")
             assets.open(assetPath).use { input ->
-                FileOutputStream(temporary).use { output -> input.copyTo(output) }
+                FileOutputStream(temporary).use { output ->
+                    val buffer = ByteArray(8192)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        digest.update(buffer, 0, count)
+                        output.write(buffer, 0, count)
+                    }
+                }
+            }
+            if (digest.digest().joinToString("") { "%02x".format(it) } != expectedHash) {
+                throw IOException("APK asset checksum mismatch: $assetPath")
             }
             temporary.setReadable(true, true)
-            if (assetPath.matches(Regex("prefix/[^/]+/(bin|sbin|libexec)/.+"))) {
+            if (assetPath.substringAfter("prefix/").substringAfter('/').let {
+                    it.startsWith("bin/") || it.startsWith("sbin/") || it.startsWith("libexec/")
+                }) {
                 temporary.setExecutable(true, true)
             }
-            try {
-                Os.link(temporary.absolutePath, destination.absolutePath)
-            } catch (error: ErrnoException) {
-                if (error.errno != OsConstants.EEXIST) throw IOException("cannot install $assetPath", error)
-            }
+            // Android denies hard links in app data on some devices. rename is atomic on
+            // this private filesystem; check again before it so existing files stay intact.
+            if (destination.exists() || isSymbolicLink(destination)) return
+            if (!temporary.renameTo(destination)) throw IOException("cannot install $assetPath")
         } finally {
             temporary.delete()
         }
+    }
+
+    private fun fileHash(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(8192)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun supportedAbi(): String {
@@ -303,30 +434,68 @@ object Rootfs {
             "arm64-v8a" -> "bin/dash-arm64-v8a"
             else -> "bin/dash-armeabi-v7a"
         }
+        val expectedHash = assetHash(context, asset)
+            ?: throw IOException("missing verified shell checksum: $asset")
         val dash = File(usr, "bin/dash")
         val sh = File(usr, "bin/sh")
+        val marker = File(usr, SHELL_MARKER_FILE)
         val packageOwned = dpkgOwnedPaths(usr)
         if ("bin/dash" in packageOwned || "bin/sh" in packageOwned) {
             throw IOException("a package owns the app-managed shell; remove the conflicting package")
         }
-        install(context, asset, dash)
-        if (!sh.isFile || !sh.readBytes().contentEquals(dash.readBytes())) {
-            dash.copyTo(sh, overwrite = true)
+        if (marker.isFile && !isSymbolicLink(marker) &&
+            marker.readText().trim() == expectedHash && dash.isFile && !isSymbolicLink(dash) &&
+            sh.isFile && !isSymbolicLink(sh)) {
+            sh.setReadable(true, true)
+            sh.setExecutable(true, true)
+            return sh
         }
+        install(context, asset, dash, expectedHash)
+        install(context, asset, sh, expectedHash)
+        writeVersionMarker(marker, expectedHash)
         sh.setReadable(true, true)
         sh.setExecutable(true, true)
         return sh
     }
 
-    private fun install(context: Context, asset: String, destination: File) {
+    private fun assetHash(context: Context, asset: String): String? {
+        val name = asset.substringAfterLast('/')
+        return try {
+            context.assets.open("bin/SHA256SUMS").bufferedReader().useLines { lines ->
+                lines.mapNotNull { line ->
+                    val fields = line.trim().split(Regex("\\s+"), limit = 2)
+                    if (fields.size == 2 && fields[1] == name && fields[0].matches(sha256Pattern)) {
+                        fields[0]
+                    } else null
+                }.firstOrNull()
+            }
+        } catch (_: IOException) {
+            null
+        }
+    }
+
+    private fun install(context: Context, asset: String, destination: File, expectedHash: String? = null) {
         destination.parentFile?.mkdirs()
         val temporary = File.createTempFile(".${destination.name}.", ".tmp", destination.parentFile)
         try {
+            val digest = MessageDigest.getInstance("SHA-256")
             context.assets.open(asset).use { input ->
-                FileOutputStream(temporary).use { output -> input.copyTo(output) }
+                FileOutputStream(temporary).use { output ->
+                    val buffer = ByteArray(8192)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        digest.update(buffer, 0, count)
+                        output.write(buffer, 0, count)
+                    }
+                }
+            }
+            if (expectedHash != null &&
+                digest.digest().joinToString("") { "%02x".format(it) } != expectedHash) {
+                throw IOException("APK asset checksum mismatch: $asset")
             }
             temporary.setReadable(true, true)
-            temporary.setExecutable(true, true)
+            if (asset.startsWith("bin/")) temporary.setExecutable(true, true)
             if (!temporary.renameTo(destination)) throw IOException("cannot update $asset")
         } finally {
             temporary.delete()
@@ -381,7 +550,9 @@ object Rootfs {
             "export PREFIX=\$USR",
             "export TMPDIR=\$USR/tmp",
             "export LD_LIBRARY_PATH=\$USR/lib",
-            "export TERMINFO=\$USR/share/terminfo",
+            "export TERMINFO=\$USR/share/terminal/terminfo",
+            "export TERMINFO_DIRS=\$USR/share/terminal/terminfo:\$USR/share/terminfo",
+            "if [ -r \"\$TERMINFO/x/xterm-256color\" ]; then set -o emacs; fi",
             "export PATH=\$USR/bin:\$USR/sbin:\$USR/libexec",
             "export LANG=C.UTF-8",
             "export TERM=xterm-256color",
@@ -392,7 +563,19 @@ object Rootfs {
     private fun migrateProfile(file: File) {
         if (!file.isFile) return
         val original = file.readText()
-        val updated = original.replace("\$USR/libexec:/system/bin", "\$USR/libexec")
+        var updated = original.replace("\$USR/libexec:/system/bin", "\$USR/libexec")
+            .replace(
+                "export TERMINFO=\$USR/share/terminfo\n",
+                "export TERMINFO=\$USR/share/terminal/terminfo\n" +
+                    "export TERMINFO_DIRS=\$USR/share/terminal/terminfo:\$USR/share/terminfo\n",
+            )
+        val terminfoLine = "export TERMINFO_DIRS=\$USR/share/terminal/terminfo:\$USR/share/terminfo\n"
+        if (!updated.contains("set -o emacs") && updated.contains(terminfoLine)) {
+            updated = updated.replace(
+                terminfoLine,
+                terminfoLine + "if [ -r \"\$TERMINFO/x/xterm-256color\" ]; then set -o emacs; fi\n",
+            )
+        }
         if (updated != original) file.writeText(updated)
     }
 

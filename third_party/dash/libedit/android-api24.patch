@@ -1,0 +1,126 @@
+--- a/src/el.c
++++ b/src/el.c
+@@ -121,11 +121,20 @@
+          */
+ 	el->el_flags = 0;
+ #ifdef WIDECHAR
++#if defined(__ANDROID__) && __ANDROID_API__ < 26
++	const char *language = getenv("LC_CTYPE");
++	if (language == NULL || *language == '\0')
++		language = getenv("LANG");
++	if (language != NULL && (strstr(language, "UTF-8") != NULL ||
++	    strstr(language, "utf8") != NULL))
++		el->el_flags |= CHARSET_IS_UTF8;
++#else
+ 	if (setlocale(LC_CTYPE, NULL) != NULL){
+ 		if (strcmp(nl_langinfo(CODESET), "UTF-8") == 0)
+ 			el->el_flags |= CHARSET_IS_UTF8;
+ 	}
+ #endif
++#endif
+ 
+ 	if (terminal_init(el) == -1) {
+ 		el_free(el->el_prog);
+--- a/src/vi.c
++++ b/src/vi.c
+@@ -997,7 +997,8 @@
+ 	pid_t pid;
+ 	ssize_t st;
+ 	int status;
+-	char tempfile[] = "/tmp/histedit.XXXXXXXXXX";
++	char tempfile[PATH_MAX];
++	const char *tmpdir = getenv("TMPDIR");
+ 	char *cp = NULL;
+ 	size_t len;
+ 	Char *line = NULL;
+@@ -1007,6 +1008,11 @@
+ 			return CC_ERROR;
+ 	}
+ 
++	if (tmpdir == NULL || tmpdir[0] != '/')
++		return CC_ERROR;
++	int length = snprintf(tempfile, sizeof(tempfile), "%s/histedit.XXXXXXXXXX", tmpdir);
++	if (length < 0 || length >= (int)sizeof(tempfile))
++		return CC_ERROR;
+ 	fd = mkstemp(tempfile);
+ 	if (fd < 0)
+ 		return CC_ERROR;
+--- a/src/readline.c
++++ b/src/readline.c
+@@ -1204,14 +1204,13 @@
+ 	return max_input_history != INT_MAX;
+ }
+ 
+-static const char _history_tmp_template[] = "/tmp/.historyXXXXXX";
+-
+ int
+ history_truncate_file (const char *filename, int nlines)
+ {
+ 	int ret = 0;
+ 	FILE *fp, *tp;
+-	char template[sizeof(_history_tmp_template)];
++	char template[PATH_MAX];
++	const char *tmpdir = getenv("TMPDIR");
+ 	char buf[4096];
+ 	int fd;
+ 	char *cp;
+@@ -1223,7 +1222,15 @@
+ 		return errno;
+ 	if ((fp = fopen(filename, "r+")) == NULL)
+ 		return errno;
+-	strcpy(template, _history_tmp_template);
++	if (tmpdir == NULL || tmpdir[0] != '/') {
++		ret = EINVAL;
++		goto out1;
++	}
++	int length = snprintf(template, sizeof(template), "%s/.historyXXXXXX", tmpdir);
++	if (length < 0 || length >= (int)sizeof(template)) {
++		ret = ENAMETOOLONG;
++		goto out1;
++	}
+ 	if ((fd = mkstemp(template)) == -1) {
+ 		ret = errno;
+ 		goto out1;
+@@ -1734,6 +1741,17 @@
+ char *
+ username_completion_function(const char *text, int state)
+ {
++#ifdef __ANDROID__
++	/* Bionic does not enumerate users. Only the app's private identity exists. */
++	if (state != 0 || text == NULL || *text == '\0')
++		return NULL;
++	if (*text == '~')
++		text++;
++	const char *name = getenv("USER");
++	if (name == NULL)
++		name = "terminal";
++	return strncmp(name, text, strlen(text)) == 0 ? strdup(name) : NULL;
++#else
+ 	struct passwd *pass = NULL;
+ 
+ 	if (text[0] == '\0')
+@@ -1756,9 +1774,8 @@
+ 		return NULL;
+ 	}
+ 	return strdup(pass->pw_name);
++#endif
+ }
+-
+-
+ /*
+  * el-compatible wrapper to send TSTP on ^Z
+  */
+--- a/src/vis.c
++++ b/src/vis.c
+@@ -66,7 +66,10 @@
+ 
+ #include <sys/types.h>
+ #include <sys/param.h>
+-
++#include <limits.h>
++#ifndef NBBY
++#define NBBY CHAR_BIT
++#endif
+ #include <stdint.h>
+ #include <assert.h>
+ #include <vis.h>
